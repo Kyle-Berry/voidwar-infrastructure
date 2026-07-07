@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # backup_system.sh
-# Broadcasts a maintenance warning, stops the Minecraft server,
+# Broadcasts maintenance warnings, stops the Minecraft server,
 # waits until the server process exits, creates a compressed backup archive,
-# restarts the server, and removes backups older than the retention window.
+# restarts the Minecraft server, and removes backups older than the retention window.
 
 set -euo pipefail
 
@@ -17,6 +17,10 @@ ARCHIVE_NAME="mcserver-${DATE_STAMP}.tar.gz"
 ARCHIVE_PATH="${BACKUP_DIR}/${ARCHIVE_NAME}"
 
 server_was_stopped=false
+backup_completed=false
+warning_broadcasted=false
+cleanup_ran=false
+cancel_requested=false
 
 find_minecraft_pid() {
     pgrep -f "java.*minecraft_server|java.*paper|java.*spigot|java.*server.jar" || true
@@ -41,7 +45,46 @@ restart_server() {
     fi
 }
 
-trap restart_server EXIT
+cleanup() {
+    if [ "$cleanup_ran" = true ]; then
+        return
+    fi
+
+    cleanup_ran=true
+
+    if [ "$backup_completed" = true ]; then
+        return
+    fi
+
+    if [ "$server_was_stopped" = true ]; then
+        echo "[*] Backup interrupted after Minecraft server stopped. Restarting Minecraft server..."
+        restart_server
+    elif [ "$warning_broadcasted" = true ] && tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        echo "[*] Backup cancelled before shutdown. Notifying players..."
+        send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup was manually cancelled. VoidWar will remain online.","color":"green"}'
+    fi
+}
+
+request_cancel() {
+    cancel_requested=true
+    cleanup
+    exit 130
+}
+
+interruptible_sleep() {
+    local seconds="$1"
+
+    for ((i = 0; i < seconds; i++)); do
+        if [ "$cancel_requested" = true ]; then
+            exit 130
+        fi
+
+        sleep 1
+    done
+}
+
+trap cleanup EXIT
+trap request_cancel INT TERM
 
 echo "[*] Starting backup routine..."
 
@@ -67,14 +110,18 @@ fi
 echo "[*] Minecraft server PID detected: $MINECRAFT_PID"
 
 echo "[*] Broadcasting backup warning to players..."
-send_mc_command "say [Maintenance] Server backup will begin in 5 minutes. The server will restart automatically."
-sleep 240
+send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 5 minutes.","color":"gold"}'
+warning_broadcasted=true
 
-send_mc_command "say [Maintenance] Server backup will begin in 1 minute. Please finish any active tasks."
-sleep 50
+interruptible_sleep 240
 
-send_mc_command "say [Maintenance] Server restarting for backup in 10 seconds."
-sleep 10
+send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 1 minute. Please finish any active tasks.","color":"gold"}'
+
+interruptible_sleep 50
+
+send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 10 seconds.","color":"red"}'
+
+interruptible_sleep 10
 
 echo "[*] Sending stop command to Minecraft server..."
 send_mc_command "stop"
@@ -94,7 +141,6 @@ tar -czf "$ARCHIVE_PATH" -C "$TARGET_DIR" .
 echo "[+] Backup created successfully: $ARCHIVE_NAME"
 
 restart_server
-trap - EXIT
 
 echo "[*] Removing backups older than ${RETENTION_DAYS} days..."
 
@@ -105,6 +151,9 @@ find "$BACKUP_DIR" \
     -mtime +6 \
     -print \
     -delete
+
+backup_completed=true
+trap - EXIT INT TERM
 
 echo "[+] Backup routine completed successfully."
 exit 0
