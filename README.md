@@ -18,6 +18,12 @@ VoidWar is hosted on a dedicated OVHcloud bare-metal server running Ubuntu Serve
 - Dual 450 GB NVMe SSDs
 - Software RAID 0 storage configuration
 
+### Cost-Efficient Dedicated Hosting
+
+This environment is intentionally built on older dedicated server hardware to balance performance and cost. The server provides dedicated CPU, memory, and NVMe storage resources for approximately $22/month, making it significantly more cost-effective than many newer dedicated server or public cloud alternatives for this type of workload.
+
+The goal is to practice real Linux server administration on dedicated hardware while keeping monthly infrastructure costs low.
+
 ### Current Deployment Model
 
 VoidWar currently runs as a native Linux workload on Ubuntu Server. Supporting infrastructure services such as monitoring and observability are planned to be added with Docker and Docker Compose.
@@ -71,6 +77,11 @@ Implemented practices include:
 - Controlled access to project directories
 - Standard Linux ownership and permission management
 - Shared workspace access where appropriate
+- Symbolic links for simplified navigation to approved project directories
+
+Symbolic links are used to provide convenient access to specific shared workspaces without granting broader access to the full server directory tree. For example, a collaborator who only needed access to plugin-related development files was given access to the approved plugins workspace rather than full administrative access to the server.
+
+File ownership and permissions are still enforced through standard Linux user, group, and directory controls.
 
 ### Backup Automation
 
