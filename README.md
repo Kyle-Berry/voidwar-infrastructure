@@ -1,41 +1,115 @@
-# Enterprise-Grade Linux Infrastructure & Networking Lab
-## Dedicated Production Environment | Bare-Metal Systems Administration & Perimeter Hardening
+# VoidWar Infrastructure
 
-This repository serves as the official version-controlled documentation, configuration ledger, and automation script vault for my dedicated, remote Linux production environment hosted on the global OVHcloud backbone network. 
+Linux server administration, security hardening, backup automation, and monitoring documentation for **VoidWar**, a self-hosted multiplayer Minecraft server project.
 
-The primary objective of this infrastructure architecture is to apply foundational Computer Science theory and vendor-neutral networking protocols to a live, high-concurrency production sandbox, prioritizing cost optimization (FinOps), cryptographic access controls, and strict perimeter defense.
+This repository documents the infrastructure behind the server, including system configuration, access controls, firewall rules, backup workflows, automation scripts, and future monitoring services.
 
----
+The goal of this project is to demonstrate practical Linux administration and infrastructure operations in a live remote server environment.
 
-## 1. Physical Hardware & Storage Infrastructure Layer (FinOps Architecture)
-To mitigate public cloud resource throttling and eliminate the "noisy neighbor" effect inherent in shared virtual instances, the environment is provisioned on a dedicated, bare-metal host optimized for high-throughput and low-latency I/O operations:
+## Current Environment
 
-* **Compute Engine:** Intel Xeon-E3 1230v6 (4 Cores / 8 Threads, clocked at 3.5 GHz base / 3.9 GHz turbo boost).
-* **Memory Pool:** 16 GB ECC (Error-Correcting Code) RAM operating at 2133 MHz, ensuring native runtime resilience against single-bit memory corruption during sustained processing loads.
-* **Storage Topology:** Dual 450 GB Enterprise NVMe Solid-State Drives configured via software utilities into a **RAID 0 (Stripped) Array**. This layout doubles data-striping velocity across parallel PCIe communication lanes, maximizing Input/Output Operations Per Second (IOPS) to support heavy asynchronous disk-write application cycles.
-* **Capital Efficiency (FinOps Evaluation):** Implemented an "N-2" hardware procurement strategy, securing dedicated enterprise silicon and bare-metal processing lanes for a 75% reduction in monthly infrastructure overhead compared to standard public cloud offerings.
+VoidWar is hosted on a dedicated OVHcloud bare-metal server running Ubuntu Server 22.04 LTS.
 
----
+### Hardware
 
-## 2. Perimeter Hardening & Network Access Security
-The edge perimeter of the Ubuntu Server 22.04 LTS (Jammy Jellyfish) deployment is hardened against external attack vectors using automated intrusion prevention protocols and a minimalist surface architecture:
+- Intel Xeon E3-1230v6
+- 4 cores / 8 threads
+- 16 GB ECC RAM
+- Dual 450 GB NVMe SSDs
+- Software RAID 0 storage configuration
 
-* **Cryptographic Authentication Gate:** Enforced mandatory public-key cryptography for all remote administrative access tunnels via PuTTY and WinSCP interfaces. The environment utilizes highly resilient **Ed25519 signature keys** (Twisted Edwards curves), offering optimal security metrics over legacy RSA protocols. Core administrative root SSH logins are completely closed.
-* **Attack Surface Optimization:** Deployed localized firewall rules configured via Netfilter/UFW frameworks to drop all unauthorized transport layer traffic, mapping strictly to essential application ports. Disabled all native IPv6 stack protocols to permanently eliminate unmonitored dual-stack network scanning surfaces.
-* **Intrusion Prevention System (IPS):** Implemented **Fail2Ban** to actively parse system authorization logs (`/var/log/auth.log`) in real time. The service tracks authentication anomalies and automatically executes dynamic local firewall rules to temporarily jail and drop malicious brute-force source IPs at the packet level.
+### Current Deployment Model
 
----
+VoidWar currently runs as a native Linux workload on Ubuntu Server. Supporting infrastructure services such as monitoring and observability are planned to be added with Docker and Docker Compose.
 
-## 3. Multi-Tenant Administration & Least Privilege Protocols
-The underlying file system structures are designed to support collaborative deployment pipelines while maintaining total environment integrity:
+This approach allows the project to document both traditional Linux server administration and modern container-based service deployment.
 
-* **Directory Isolation Jails:** Established a multi-user permission matrix enforcing the **Principle of Least Privilege**. Collaborative developers operate under dedicated, non-privileged user accounts.
-* **Symbolic Link Access Control:** Utilized explicit symbolic links (`sym-links`) to bridge access to designated shared development workspaces. This prevents external users from mapping out parent directories, modifying system-level configurations, or traversing unvetted paths on the file system.
-* **Session Multiplexing and Uptime:** Integrated `tmux` (Terminal Multiplexer) to manage continuous application runtime consoles. This decouples live process execution from active remote SSH network socket states, ensuring persistent application loops continue to compile smoothly within the kernel regardless of local machine connectivity.
+## Infrastructure Areas
 
----
+### SSH Hardening
 
-## 4. Production Roadmap & Continuous Integration
-This repository maintains a live log of all automation assets and maintenance workflows running on the host server:
-* `/scripts` - Production Bash shell scripts for automated backup tarball generation and system optimization routines.
-* `/config` - Hardened configuration templates for SSH, UFW, and Fail2Ban perimeters.
+Remote administration is performed through SSH using public-key authentication.
+
+Implemented controls include:
+
+- Ed25519 SSH key authentication
+- Disabled root SSH login
+- Disabled password-based SSH authentication
+- Separate non-root administrative user
+- Remote access through SSH/SFTP tools such as PuTTY and WinSCP
+
+### Firewall Configuration
+
+The server uses UFW as a local firewall frontend for Linux Netfilter.
+
+Firewall configuration follows a minimal-exposure approach:
+
+- Only required inbound service ports are allowed
+- Unused inbound traffic is denied
+- Firewall rules are documented for repeatability
+- IPv6 is disabled where not currently needed
+
+### Intrusion Prevention
+
+Fail2Ban is used to monitor SSH authentication attempts and respond to repeated failed logins.
+
+Current protections include:
+
+- SSH log monitoring through `/var/log/auth.log`
+- Temporary bans for repeated authentication failures
+- Integration with local firewall rules
+- Basic brute-force mitigation for public-facing SSH access
+
+### User and Permission Management
+
+The server uses separate Linux user accounts to reduce unnecessary privilege exposure.
+
+Implemented practices include:
+
+- Non-root administration
+- Limited permissions for non-administrative users
+- Controlled access to project directories
+- Standard Linux ownership and permission management
+- Shared workspace access where appropriate
+
+### Backup Automation
+
+This repository includes Bash scripts for creating compressed backups of the server directory.
+
+Current backup workflow includes:
+
+- Timestamped `.tar.gz` archive creation
+- Configurable backup destination
+- Basic error handling
+- Automatic cleanup of backups older than the retention period
+- Restore documentation planned for disaster recovery practice
+
+### Session and Process Management
+
+`tmux` is used to manage long-running server console sessions independently of SSH connectivity.
+
+This allows administrative sessions and server processes to remain available even if the local SSH connection drops.
+
+## Planned Improvements
+
+Planned infrastructure additions include:
+
+- Docker installation and Docker Compose examples
+- Nginx reverse proxy configuration
+- Prometheus metrics collection
+- Grafana dashboard setup
+- Automated security update workflow
+- Expanded backup and restore documentation
+- Service monitoring and uptime checks
+
+## Repository Structure
+
+```text
+/scripts
+  Bash scripts for backups, maintenance, and automation
+
+/config
+  Example configuration files for SSH, UFW, Fail2Ban, nginx, Docker, and monitoring tools
+
+/docs
+  Setup notes, hardening documentation, recovery procedures, and operational runbooks
