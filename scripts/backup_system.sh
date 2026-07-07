@@ -1,37 +1,110 @@
 #!/bin/bash
-# ==============================================================================
-# VERSION 2.0: AUTOMATED REPLICATION ROUTINE WITH STORAGE RETENTION POLICY
-# CONFIGURATION TARGET: SINGLE-THREADED ENGINE DIRECTLY TO NVMe CORE ARRAY
-# LOGICAL UPGRADE: IMPLEMENTED FINOPS RESOURCE ROTATION TO PREVENT SATURATION
-# ==============================================================================
+
+# backup_system.sh
+# Broadcasts a maintenance warning, stops the Minecraft server,
+# waits until the server process exits, creates a compressed backup archive,
+# restarts the server, and removes backups older than the retention window.
+
+set -euo pipefail
 
 BACKUP_DIR="/home/blockboss/backups"
 TARGET_DIR="/home/blockboss/minecraft_server"
-DATE_STAMP=$(date +%F)
+RETENTION_DAYS=7
+TMUX_SESSION="minecraft"
+
+DATE_STAMP="$(date +%F)"
 ARCHIVE_NAME="mcserver-${DATE_STAMP}.tar.gz"
+ARCHIVE_PATH="${BACKUP_DIR}/${ARCHIVE_NAME}"
 
-echo "[*] Launching system backup sequence..."
+server_was_stopped=false
 
-# Enforce target boundary parameter check
-if [ ! -d "$BACKUP_DIR" ]; then
-    mkdir -p "$BACKUP_DIR"
-fi
+find_minecraft_pid() {
+    pgrep -f "java.*minecraft_server|java.*paper|java.*spigot|java.*server.jar" || true
+}
 
-# Stream compression natively on-the-fly to optimize IOPS and bypass folder copy
-echo "[*] Archiving $TARGET_DIR directly to $BACKUP_DIR/$ARCHIVE_NAME..."
-tar -czf "$BACKUP_DIR/$ARCHIVE_NAME" -C "$TARGET_DIR" .
+send_mc_command() {
+    local command="$1"
+    tmux send-keys -t "$TMUX_SESSION" "$command" C-m
+}
 
-# Verify kernel execution return codes
-if [ $? -eq 0 ]; then
-    echo "[+] Structural storage backup successfully compiled: $ARCHIVE_NAME"
-else
-    echo "[-] CRITICAL FAULT: Storage archive compilation failure detected." >&2
+restart_server() {
+    if [ "$server_was_stopped" = true ]; then
+        echo "[*] Restarting Minecraft server..."
+
+        if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            tmux send-keys -t "$TMUX_SESSION" "cd $TARGET_DIR && ./start.sh" C-m
+        else
+            tmux new-session -d -s "$TMUX_SESSION" "cd $TARGET_DIR && ./start.sh"
+        fi
+
+        server_was_stopped=false
+    fi
+}
+
+trap restart_server EXIT
+
+echo "[*] Starting backup routine..."
+
+if [ ! -d "$TARGET_DIR" ]; then
+    echo "[-] Error: target directory does not exist: $TARGET_DIR" >&2
     exit 1
 fi
 
-# FinOps Space Management: Automate retention policy to preserve storage margins
-echo "[*] Auditing storage volume. Purging legacy archives exceeding 7-day threshold..."
-find "$BACKUP_DIR" -type f -mtime +7 -name "mcserver-*.tar.gz" -delete
+mkdir -p "$BACKUP_DIR"
 
-echo "[+] Infrastructure maintenance sequence fully executed."
+if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    echo "[-] Error: tmux session not found: $TMUX_SESSION" >&2
+    exit 1
+fi
+
+MINECRAFT_PID="$(find_minecraft_pid | head -n 1)"
+
+if [ -z "$MINECRAFT_PID" ]; then
+    echo "[-] Error: Minecraft server process was not found." >&2
+    exit 1
+fi
+
+echo "[*] Minecraft server PID detected: $MINECRAFT_PID"
+
+echo "[*] Broadcasting backup warning to players..."
+send_mc_command "say [Maintenance] Server backup will begin in 5 minutes. The server will restart automatically."
+sleep 240
+
+send_mc_command "say [Maintenance] Server backup will begin in 1 minute. Please finish any active tasks."
+sleep 50
+
+send_mc_command "say [Maintenance] Server restarting for backup in 10 seconds."
+sleep 10
+
+echo "[*] Sending stop command to Minecraft server..."
+send_mc_command "stop"
+server_was_stopped=true
+
+echo "[*] Waiting for Minecraft server process to stop..."
+
+while kill -0 "$MINECRAFT_PID" 2>/dev/null; do
+    sleep 2
+done
+
+echo "[+] Minecraft server has stopped."
+
+echo "[*] Creating archive: $ARCHIVE_PATH"
+tar -czf "$ARCHIVE_PATH" -C "$TARGET_DIR" .
+
+echo "[+] Backup created successfully: $ARCHIVE_NAME"
+
+restart_server
+trap - EXIT
+
+echo "[*] Removing backups older than ${RETENTION_DAYS} days..."
+
+# With daily backups, -mtime +6 keeps roughly the most recent 7 daily backups.
+find "$BACKUP_DIR" \
+    -type f \
+    -name "mcserver-*.tar.gz" \
+    -mtime +6 \
+    -print \
+    -delete
+
+echo "[+] Backup routine completed successfully."
 exit 0
