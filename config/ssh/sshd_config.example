@@ -1,0 +1,48 @@
+# sshd_config.example
+# Sanitized OpenSSH server configuration example.
+#
+# This example is based on a hardened Linux server configuration used for
+# remote administration of the VoidWar infrastructure environment.
+#
+# Do not copy this file blindly into production. Test SSH configuration changes
+# carefully before restarting sshd to avoid locking yourself out.
+
+# Include additional SSH daemon configuration files.
+Include /etc/ssh/sshd_config.d/*.conf
+
+# The default SSH port is used in this public example.
+# The production environment may use a different port based on operational requirements.
+Port 22
+
+# Authentication
+
+# Disable direct root login.
+PermitRootLogin no
+
+# Disable password-based SSH login.
+# Remote access uses SSH key authentication.
+PasswordAuthentication no
+
+# Disable keyboard-interactive authentication.
+KbdInteractiveAuthentication no
+
+# Keep PAM enabled for Linux account/session handling.
+# PasswordAuthentication and KbdInteractiveAuthentication remain disabled above.
+UsePAM yes
+
+# Disable X11 forwarding because this server does not require graphical forwarding.
+X11Forwarding no
+
+# Do not print the message of the day through sshd.
+PrintMotd no
+
+# Allow client locale environment variables.
+AcceptEnv LANG LC_*
+
+# Enable SFTP subsystem.
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+# Example: deny login for default cloud image users after creating
+# a dedicated non-root administrative account.
+# Replace "defaultuser" with the relevant username if used.
+DenyUsers defaultuser
