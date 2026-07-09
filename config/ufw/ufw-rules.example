@@ -1,0 +1,34 @@
+# ufw-rules.example
+# Sanitized UFW firewall rule example.
+#
+# This example is based on the firewall posture used for the VoidWar
+# infrastructure environment.
+#
+# Do not copy this file blindly into production. Review required ports,
+# source restrictions, IPv6 behavior, and service exposure before applying.
+
+# Default firewall policy
+ufw default deny incoming
+ufw default allow outgoing
+ufw default deny routed
+
+# Enable low-volume firewall logging
+ufw logging low
+
+# SSH administration
+# Limit applies basic rate limiting to reduce repeated connection attempts.
+# The production environment may use a different SSH port.
+ufw limit 22/tcp
+
+# Minecraft Java server traffic
+# The production environment may use a different game port.
+ufw allow 25565/tcp
+
+# Minecraft Bedrock / Geyser traffic, if enabled
+ufw allow 19132/udp
+
+# Enable UFW after reviewing rules
+ufw enable
+
+# Verify firewall status
+ufw status verbose

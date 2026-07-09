@@ -1,0 +1,34 @@
+# custom_hardening.local.example
+# Sanitized Fail2Ban jail drop-in example.
+#
+# This example is based on the SSH brute-force protection used for the
+# VoidWar infrastructure environment.
+#
+# Production Fail2Ban drop-in files are placed under:
+# /etc/fail2ban/jail.d/
+#
+# Do not copy this file blindly into production. Review ports, log paths,
+# backends, ignore lists, and ban thresholds before applying.
+
+[DEFAULT]
+# Whitelist local server loopback addresses.
+ignoreip = 127.0.0.1/8 ::1
+
+# Default ban policy for enabled jails.
+bantime  = 1h
+findtime = 15m
+maxretry = 3
+
+[sshd]
+# Enable SSH brute-force protection.
+enabled = true
+
+# Use the configured SSH service/port for the production environment.
+# The public example does not expose the production SSH port.
+port = ssh
+
+# SSH authentication log source.
+logpath = /var/log/auth.log
+
+# systemd backend is commonly used on modern Ubuntu/Debian systems.
+backend = systemd
