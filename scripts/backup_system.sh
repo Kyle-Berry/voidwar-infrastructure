@@ -1,9 +1,11 @@
 #!/bin/bash
 
 # backup_system.sh
-# Broadcasts maintenance warnings, stops the Minecraft server,
-# waits until the server process exits, creates a compressed backup archive,
-# restarts the Minecraft server, and removes backups older than the retention window.
+# Creates a compressed backup archive of the Minecraft server directory.
+# If the Minecraft server is running, the script broadcasts maintenance warnings,
+# stops the server, waits for the process to exit, creates the backup, and restarts it.
+# If the Minecraft server is already stopped, the script creates the backup and leaves it stopped.
+# Old backups outside the retention window are removed automatically.
 
 set -euo pipefail
 
@@ -16,6 +18,7 @@ DATE_STAMP="$(date +%F)"
 ARCHIVE_NAME="mcserver-${DATE_STAMP}.tar.gz"
 ARCHIVE_PATH="${BACKUP_DIR}/${ARCHIVE_NAME}"
 
+server_was_running=false
 server_was_stopped=false
 backup_completed=false
 warning_broadcasted=false
@@ -95,52 +98,59 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 
-if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-    echo "[-] Error: tmux session not found: $TMUX_SESSION" >&2
-    exit 1
-fi
-
 MINECRAFT_PID="$(find_minecraft_pid | head -n 1)"
 
-if [ -z "$MINECRAFT_PID" ]; then
-    echo "[-] Error: Minecraft server process was not found." >&2
-    exit 1
+if [ -n "$MINECRAFT_PID" ]; then
+    server_was_running=true
+    echo "[*] Minecraft server PID detected: $MINECRAFT_PID"
+else
+    echo "[*] Minecraft server process was not found. Assuming server is already stopped."
+    echo "[*] Backup will be created without starting the Minecraft server afterward."
 fi
 
-echo "[*] Minecraft server PID detected: $MINECRAFT_PID"
+if [ "$server_was_running" = true ]; then
+    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        echo "[-] Error: tmux session not found: $TMUX_SESSION" >&2
+        exit 1
+    fi
 
-echo "[*] Broadcasting backup warning to players..."
-send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 5 minutes.","color":"gold"}'
-warning_broadcasted=true
+    echo "[*] Broadcasting backup warning to players..."
+    send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 5 minutes.","color":"gold"}'
+    warning_broadcasted=true
 
-interruptible_sleep 240
+    interruptible_sleep 10
 
-send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 1 minute. Please finish any active tasks.","color":"gold"}'
+    send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 1 minute. Please finish any active tasks.","color":"gold"}'
 
-interruptible_sleep 50
+    interruptible_sleep 10
 
-send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 10 seconds.","color":"red"}'
+    send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 10 seconds.","color":"red"}'
 
-interruptible_sleep 10
+    interruptible_sleep 10
 
-echo "[*] Sending stop command to Minecraft server..."
-send_mc_command "stop"
-server_was_stopped=true
+    echo "[*] Sending stop command to Minecraft server..."
+    send_mc_command "stop"
+    server_was_stopped=true
 
-echo "[*] Waiting for Minecraft server process to stop..."
+    echo "[*] Waiting for Minecraft server process to stop..."
 
-while kill -0 "$MINECRAFT_PID" 2>/dev/null; do
-    sleep 2
-done
+    while kill -0 "$MINECRAFT_PID" 2>/dev/null; do
+        sleep 2
+    done
 
-echo "[+] Minecraft server has stopped."
+    echo "[+] Minecraft server has stopped."
+fi
 
 echo "[*] Creating archive: $ARCHIVE_PATH"
 tar -czf "$ARCHIVE_PATH" -C "$TARGET_DIR" .
 
 echo "[+] Backup created successfully: $ARCHIVE_NAME"
 
-restart_server
+if [ "$server_was_running" = true ]; then
+    restart_server
+else
+    echo "[*] Minecraft server was already stopped before backup. Leaving it stopped."
+fi
 
 echo "[*] Removing backups older than ${RETENTION_DAYS} days..."
 
