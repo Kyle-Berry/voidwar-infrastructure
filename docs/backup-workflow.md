@@ -93,6 +93,16 @@ The server is started through the existing `start.sh` script inside the Minecraf
 
 The script runs the restart command inside the configured `tmux` session, allowing the Minecraft console to remain available after the backup process completes.
 
+## Preserving Original Server State
+
+The backup script preserves the Minecraft server's original state.
+
+If the Minecraft server is running when the backup begins, the script broadcasts maintenance warnings, stops the server, waits for the process to exit, creates the backup archive, and then restarts the server.
+
+If the Minecraft server is already stopped when the backup begins, the script skips the player warning and shutdown steps, creates the backup archive, and leaves the server stopped.
+
+This prevents the scheduled backup job from unexpectedly starting the Minecraft server during maintenance, debugging, plugin work, or intentional downtime.
+
 ## Retention Policy
 
 The backup workflow includes automatic cleanup of older backup files.
