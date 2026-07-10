@@ -85,15 +85,35 @@ File ownership and permissions are still enforced through standard Linux user, g
 
 ### Backup Automation
 
-This repository includes Bash scripts for creating compressed backups of the server directory.
+This repository includes a Bash-based backup workflow for creating compressed backups of the Minecraft server directory.
 
-Current backup workflow includes:
+The current backup workflow is implemented by:
+
+```text
+scripts/backup_system.sh
+```
+
+Current backup behavior includes:
 
 - Timestamped `.tar.gz` archive creation
-- Configurable backup destination
-- Basic error handling
+- Configurable backup source and destination paths
+- Player-facing maintenance warnings using Minecraft `tellraw`
+- Graceful Minecraft shutdown before archive creation
+- Process-aware waiting for the Minecraft Java process to fully exit
+- Automatic server restart if the server was running when the backup began
+- Preservation of original server state if the server was already stopped
+- Basic error handling and cancellation cleanup
 - Automatic cleanup of backups older than the retention period
-- Restore documentation planned for disaster recovery practice
+- Backup logging through cron output redirection
+
+Backup and restore documentation is available at:
+
+```text
+docs/backup-workflow.md
+docs/restore-procedure.md
+```
+
+The backup strategy includes both server-side backups and additional local workstation copies for disaster recovery.
 
 ### Session and Process Management
 
