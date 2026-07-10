@@ -20,7 +20,7 @@ Backups may exist in two locations:
 
 and on a local workstation.
 
-The server-side backup directory provides fast access for routine restores. The local workstation copy provides an additional layer of protection if the server becomes unavailable, the VM/bare-metal system fails, or the server-side backup directory is damaged.
+The server-side backup directory provides fast access for routine restores. The local workstation copy provides an additional layer of protection if the dedicated server becomes unavailable, fails, or the server-side backup directory is damaged.
 
 ## Backup Sources
 
