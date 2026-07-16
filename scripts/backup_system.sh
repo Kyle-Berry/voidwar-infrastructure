@@ -26,7 +26,7 @@ cleanup_ran=false
 cancel_requested=false
 
 find_minecraft_pid() {
-    pgrep -f "java.*minecraft_server|java.*paper|java.*spigot|java.*server.jar" || true
+    pgrep -f 'java.*-jar paper-.*\.jar.*nogui' || true
 }
 
 send_mc_command() {
@@ -118,11 +118,11 @@ if [ "$server_was_running" = true ]; then
     send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 5 minutes.","color":"gold"}'
     warning_broadcasted=true
 
-    interruptible_sleep 10
+    interruptible_sleep 240
 
     send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 1 minute. Please finish any active tasks.","color":"gold"}'
 
-    interruptible_sleep 10
+    interruptible_sleep 50
 
     send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 10 seconds.","color":"red"}'
 
