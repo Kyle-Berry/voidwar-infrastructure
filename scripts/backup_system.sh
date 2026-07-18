@@ -1,32 +1,70 @@
 #!/bin/bash
 
 # backup_system.sh
-# Creates a compressed backup archive of the Minecraft server directory.
-# If the Minecraft server is running, the script broadcasts maintenance warnings,
-# stops the server, waits for the process to exit, creates the backup, and restarts it.
-# If the Minecraft server is already stopped, the script creates the backup and leaves it stopped.
-# Old backups outside the retention window are removed automatically.
+# Creates and validates compressed Minecraft server backups.
+#
+# The script preserves the Minecraft server's original runtime state:
+#   - If running, Minecraft is stopped gracefully and restarted afterward.
+#   - If already stopped, Minecraft remains stopped afterward.
+#
+# Grandfather-Father-Son retention:
+#   - Daily backups:  keep 7
+#   - Weekly backups: keep 4
+#   - Monthly backups: keep 6
+#
+# Weekly promotion occurs on Sunday.
+# Monthly promotion occurs on the first day of the month.
 
-set -euo pipefail
+set -Eeuo pipefail
 
-BACKUP_DIR="/home/blockboss/backups"
+BACKUP_ROOT="/home/blockboss/backups"
+DAILY_DIR="${BACKUP_ROOT}/daily"
+WEEKLY_DIR="${BACKUP_ROOT}/weekly"
+MONTHLY_DIR="${BACKUP_ROOT}/monthly"
+
 TARGET_DIR="/home/blockboss/minecraft_server"
-RETENTION_DAYS=7
 TMUX_SESSION="minecraft"
+
+DAILY_RETENTION=7
+WEEKLY_RETENTION=4
+MONTHLY_RETENTION=6
+
+# These environment-variable overrides make testing possible without
+# editing the production values in this script.
+WARNING_5_MIN_DELAY="${WARNING_5_MIN_DELAY:-240}"
+WARNING_1_MIN_DELAY="${WARNING_1_MIN_DELAY:-50}"
+WARNING_10_SEC_DELAY="${WARNING_10_SEC_DELAY:-10}"
+
+DAY_OF_WEEK="${DAY_OF_WEEK_OVERRIDE:-$(date +%u)}"
+DAY_OF_MONTH="${DAY_OF_MONTH_OVERRIDE:-$(date +%d)}"
 
 DATE_STAMP="$(date +%F)"
 ARCHIVE_NAME="mcserver-${DATE_STAMP}.tar.gz"
-ARCHIVE_PATH="${BACKUP_DIR}/${ARCHIVE_NAME}"
+
+DAILY_ARCHIVE_PATH="${DAILY_DIR}/${ARCHIVE_NAME}"
+WEEKLY_ARCHIVE_PATH="${WEEKLY_DIR}/${ARCHIVE_NAME}"
+MONTHLY_ARCHIVE_PATH="${MONTHLY_DIR}/${ARCHIVE_NAME}"
+
+DAILY_TEMP_PATH="${DAILY_DIR}/.${ARCHIVE_NAME}.partial.$$"
+WEEKLY_TEMP_PATH="${WEEKLY_DIR}/.${ARCHIVE_NAME}.partial.$$"
+MONTHLY_TEMP_PATH="${MONTHLY_DIR}/.${ARCHIVE_NAME}.partial.$$"
+
+LOCK_FILE="${BACKUP_ROOT}/backup_system.lock"
+
+MINECRAFT_PID=""
 
 server_was_running=false
-server_was_stopped=false
-backup_completed=false
+stop_requested=false
+server_restored=false
 warning_broadcasted=false
 cleanup_ran=false
-cancel_requested=false
 
 find_minecraft_pid() {
     pgrep -f 'java.*-jar paper-.*\.jar.*nogui' || true
+}
+
+minecraft_is_running() {
+    pgrep -f 'java.*-jar paper-.*\.jar.*nogui' >/dev/null 2>&1
 }
 
 send_mc_command() {
@@ -34,18 +72,39 @@ send_mc_command() {
     tmux send-keys -t "$TMUX_SESSION" "$command" C-m
 }
 
-restart_server() {
-    if [ "$server_was_stopped" = true ]; then
-        echo "[*] Restarting Minecraft server..."
+wait_for_pid_exit() {
+    local pid="$1"
 
-        if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-            tmux send-keys -t "$TMUX_SESSION" "cd $TARGET_DIR && ./start.sh" C-m
-        else
-            tmux new-session -d -s "$TMUX_SESSION" "cd $TARGET_DIR && ./start.sh"
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 2
+    done
+}
+
+restart_server() {
+    echo "[*] Restarting Minecraft server..."
+
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux send-keys -t "$TMUX_SESSION" \
+            "cd $TARGET_DIR && ./start.sh" C-m
+    else
+        tmux new-session -d -s "$TMUX_SESSION" \
+            "cd $TARGET_DIR && ./start.sh"
+    fi
+
+    echo "[*] Waiting for Minecraft process to appear..."
+
+    for ((i = 0; i < 30; i++)); do
+        if minecraft_is_running; then
+            server_restored=true
+            echo "[+] Minecraft server process detected after restart."
+            return 0
         fi
 
-        server_was_stopped=false
-    fi
+        sleep 1
+    done
+
+    echo "[-] Error: Minecraft process was not detected after restart." >&2
+    return 1
 }
 
 cleanup() {
@@ -54,23 +113,36 @@ cleanup() {
     fi
 
     cleanup_ran=true
+    set +e
 
-    if [ "$backup_completed" = true ]; then
-        return
-    fi
+    rm -f -- \
+        "$DAILY_TEMP_PATH" \
+        "$WEEKLY_TEMP_PATH" \
+        "$MONTHLY_TEMP_PATH"
 
-    if [ "$server_was_stopped" = true ]; then
-        echo "[*] Backup interrupted after Minecraft server stopped. Restarting Minecraft server..."
-        restart_server
-    elif [ "$warning_broadcasted" = true ] && tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        echo "[*] Backup cancelled before shutdown. Notifying players..."
-        send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup was manually cancelled. VoidWar will remain online.","color":"green"}'
+    if [ "$server_was_running" = true ] &&
+       [ "$server_restored" = false ]; then
+
+        if [ "$stop_requested" = true ]; then
+            echo "[*] Backup interrupted after Minecraft shutdown began."
+
+            if kill -0 "$MINECRAFT_PID" 2>/dev/null; then
+                echo "[*] Waiting for the original Minecraft process to exit..."
+                wait_for_pid_exit "$MINECRAFT_PID"
+            fi
+
+            restart_server
+        elif [ "$warning_broadcasted" = true ] &&
+             tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            echo "[*] Backup cancelled before shutdown. Notifying players..."
+
+            send_mc_command \
+                'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup was manually cancelled. VoidWar will remain online.","color":"green"}'
+        fi
     fi
 }
 
 request_cancel() {
-    cancel_requested=true
-    cleanup
     exit 130
 }
 
@@ -78,25 +150,73 @@ interruptible_sleep() {
     local seconds="$1"
 
     for ((i = 0; i < seconds; i++)); do
-        if [ "$cancel_requested" = true ]; then
-            exit 130
-        fi
-
         sleep 1
+    done
+}
+
+promote_archive() {
+    local source_path="$1"
+    local temporary_path="$2"
+    local destination_path="$3"
+    local tier_name="$4"
+
+    echo "[*] Promoting archive to ${tier_name} tier..."
+
+    cp -p -- "$source_path" "$temporary_path"
+    mv -f -- "$temporary_path" "$destination_path"
+
+    echo "[+] ${tier_name^} backup created: $(basename "$destination_path")"
+}
+
+prune_backup_tier() {
+    local directory="$1"
+    local retention_count="$2"
+    local tier_name="$3"
+    local -a backups=()
+
+    mapfile -t backups < <(
+        find "$directory" \
+            -maxdepth 1 \
+            -type f \
+            -name "mcserver-*.tar.gz" \
+            -printf '%T@ %p\n' |
+        sort -nr |
+        cut -d' ' -f2-
+    )
+
+    echo "[*] ${tier_name^} tier contains ${#backups[@]} backup(s)."
+    echo "[*] ${tier_name^} retention limit: ${retention_count}."
+
+    if [ "${#backups[@]}" -le "$retention_count" ]; then
+        return
+    fi
+
+    for ((i = retention_count; i < ${#backups[@]}; i++)); do
+        echo "[*] Removing expired ${tier_name} backup: ${backups[$i]}"
+        rm -- "${backups[$i]}"
     done
 }
 
 trap cleanup EXIT
 trap request_cancel INT TERM
 
-echo "[*] Starting backup routine..."
+echo "[*] Starting GFS backup routine..."
 
 if [ ! -d "$TARGET_DIR" ]; then
     echo "[-] Error: target directory does not exist: $TARGET_DIR" >&2
     exit 1
 fi
 
-mkdir -p "$BACKUP_DIR"
+# mkdir -p creates missing directories and leaves existing directories intact.
+mkdir -p "$DAILY_DIR" "$WEEKLY_DIR" "$MONTHLY_DIR"
+
+# Prevent cron and manual executions from running concurrently.
+exec 9>"$LOCK_FILE"
+
+if ! flock -n 9; then
+    echo "[-] Error: another backup process is already running." >&2
+    exit 1
+fi
 
 MINECRAFT_PID="$(find_minecraft_pid | head -n 1)"
 
@@ -104,8 +224,9 @@ if [ -n "$MINECRAFT_PID" ]; then
     server_was_running=true
     echo "[*] Minecraft server PID detected: $MINECRAFT_PID"
 else
-    echo "[*] Minecraft server process was not found. Assuming server is already stopped."
-    echo "[*] Backup will be created without starting the Minecraft server afterward."
+    echo "[*] Minecraft server process was not found."
+    echo "[*] Assuming Minecraft is already stopped."
+    echo "[*] Minecraft will remain stopped after the backup."
 fi
 
 if [ "$server_was_running" = true ]; then
@@ -115,55 +236,91 @@ if [ "$server_was_running" = true ]; then
     fi
 
     echo "[*] Broadcasting backup warning to players..."
-    send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 5 minutes.","color":"gold"}'
+
+    send_mc_command \
+        'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 5 minutes.","color":"gold"}'
+
     warning_broadcasted=true
 
-    interruptible_sleep 240
+    interruptible_sleep "$WARNING_5_MIN_DELAY"
 
-    send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 1 minute. Please finish any active tasks.","color":"gold"}'
+    send_mc_command \
+        'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 1 minute. Please finish any active tasks.","color":"gold"}'
 
-    interruptible_sleep 50
+    interruptible_sleep "$WARNING_1_MIN_DELAY"
 
-    send_mc_command 'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 10 seconds.","color":"red"}'
+    send_mc_command \
+        'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 10 seconds.","color":"red"}'
 
-    interruptible_sleep 10
+    interruptible_sleep "$WARNING_10_SEC_DELAY"
 
     echo "[*] Sending stop command to Minecraft server..."
     send_mc_command "stop"
-    server_was_stopped=true
+    stop_requested=true
 
     echo "[*] Waiting for Minecraft server process to stop..."
-
-    while kill -0 "$MINECRAFT_PID" 2>/dev/null; do
-        sleep 2
-    done
+    wait_for_pid_exit "$MINECRAFT_PID"
 
     echo "[+] Minecraft server has stopped."
 fi
 
-echo "[*] Creating archive: $ARCHIVE_PATH"
-tar -czf "$ARCHIVE_PATH" -C "$TARGET_DIR" .
+# Write to a hidden temporary file first. A failed or interrupted archive
+# will not appear as a normal completed backup.
+rm -f -- "$DAILY_TEMP_PATH"
 
-echo "[+] Backup created successfully: $ARCHIVE_NAME"
+echo "[*] Creating temporary daily archive: $DAILY_TEMP_PATH"
 
+tar -czf "$DAILY_TEMP_PATH" \
+    -C "$TARGET_DIR" .
+
+echo "[+] Archive creation completed."
+
+# Restore the original running state as soon as archive creation finishes.
 if [ "$server_was_running" = true ]; then
     restart_server
 else
-    echo "[*] Minecraft server was already stopped before backup. Leaving it stopped."
+    echo "[*] Minecraft was already stopped. Leaving it stopped."
 fi
 
-echo "[*] Removing backups older than ${RETENTION_DAYS} days..."
+echo "[*] Validating temporary backup archive..."
 
-# With daily backups, -mtime +6 keeps roughly the most recent 7 daily backups.
-find "$BACKUP_DIR" \
-    -type f \
-    -name "mcserver-*.tar.gz" \
-    -mtime +6 \
-    -print \
-    -delete
+if ! tar -tzf "$DAILY_TEMP_PATH" >/dev/null; then
+    echo "[-] Error: backup archive validation failed." >&2
+    exit 1
+fi
 
-backup_completed=true
+echo "[+] Backup archive validation passed."
+
+# Replace the same day's daily archive only after the new archive validates.
+mv -f -- "$DAILY_TEMP_PATH" "$DAILY_ARCHIVE_PATH"
+
+echo "[+] Daily backup finalized: $DAILY_ARCHIVE_PATH"
+
+# Sunday is 7 according to date +%u.
+if [ "$DAY_OF_WEEK" = "7" ]; then
+    promote_archive \
+        "$DAILY_ARCHIVE_PATH" \
+        "$WEEKLY_TEMP_PATH" \
+        "$WEEKLY_ARCHIVE_PATH" \
+        "weekly"
+fi
+
+# The first day of the month is 01 according to date +%d.
+if [ "$DAY_OF_MONTH" = "01" ]; then
+    promote_archive \
+        "$DAILY_ARCHIVE_PATH" \
+        "$MONTHLY_TEMP_PATH" \
+        "$MONTHLY_ARCHIVE_PATH" \
+        "monthly"
+fi
+
+prune_backup_tier "$DAILY_DIR" "$DAILY_RETENTION" "daily"
+prune_backup_tier "$WEEKLY_DIR" "$WEEKLY_RETENTION" "weekly"
+prune_backup_tier "$MONTHLY_DIR" "$MONTHLY_RETENTION" "monthly"
+
 trap - EXIT INT TERM
 
-echo "[+] Backup routine completed successfully."
+echo "[+] GFS backup routine completed successfully."
+echo "[+] Daily archive: $DAILY_ARCHIVE_PATH"
+
 exit 0
