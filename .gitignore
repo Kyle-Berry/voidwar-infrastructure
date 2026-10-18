@@ -41,3 +41,18 @@ backups/
 Thumbs.db
 .vscode/
 .idea/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.tfplan
+*.tfplan.*
+*.tfbackend
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraform.tfstate.lock.info
