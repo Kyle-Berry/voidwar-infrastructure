@@ -50,18 +50,61 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
   bucket = aws_s3_bucket.backups.id
 
   rule {
-    id     = "cleanup-old-versions"
+    id     = "expire-daily-backups"
     status = "Enabled"
 
-    filter {}
+    filter {
+      prefix = "backups/daily/"
+    }
 
     expiration {
-      days = 210
+      days = 8
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = 30
+      noncurrent_days = 7
     }
+  }
+
+  rule {
+    id     = "expire-weekly-backups"
+    status = "Enabled"
+
+    filter {
+      prefix = "backups/weekly/"
+    }
+
+    expiration {
+      days = 35
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+  }
+
+  rule {
+    id     = "expire-monthly-backups"
+    status = "Enabled"
+
+    filter {
+      prefix = "backups/monthly/"
+    }
+
+    expiration {
+      days = 190
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+  }
+
+  rule {
+    id     = "abort-incomplete-uploads"
+    status = "Enabled"
+
+    filter {}
 
     abort_incomplete_multipart_upload {
       days_after_initiation = 7

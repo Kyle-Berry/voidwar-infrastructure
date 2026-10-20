@@ -271,7 +271,8 @@ rm -f -- "$DAILY_TEMP_PATH"
 echo "[*] Creating temporary daily archive: $DAILY_TEMP_PATH"
 
 tar -czf "$DAILY_TEMP_PATH" \
-    -C "$TARGET_DIR" .
+    -C "$TARGET_DIR" . \
+    -C / srv/plugins
 
 echo "[+] Archive creation completed."
 
@@ -322,5 +323,15 @@ trap - EXIT INT TERM
 
 echo "[+] GFS backup routine completed successfully."
 echo "[+] Daily archive: $DAILY_ARCHIVE_PATH"
+
+# Synchronize local GFS backups to AWS S3 after the local backup succeeds.
+echo "[*] Starting offsite S3 backup synchronization..."
+
+if /home/blockboss/upload_s3_backups.sh --sync-all; then
+    echo "[+] Offsite S3 backup synchronization completed."
+else
+    echo "[-] WARNING: S3 synchronization failed. Local backups remain intact." >&2
+    exit 1
+fi
 
 exit 0
