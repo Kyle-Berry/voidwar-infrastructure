@@ -21,7 +21,7 @@ VoidWar runs on a live remote bare-metal server rather than a temporary local la
 
 ## Architecture
 
-![VoidWar infrastructure architecture](diagrams/architecture.svg)
+![VoidWar infrastructure architecture](diagrams/architecture.png)
 
 The editable Mermaid source is available at [`diagrams/architecture.mmd`](diagrams/architecture.mmd).
 
