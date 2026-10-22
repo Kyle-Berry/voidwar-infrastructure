@@ -1,8 +1,11 @@
+
 flowchart TB
     Internet(["Public Internet"])
+    Players(["Minecraft Players"])
     Admin(["Administrator"])
+    Workstation["Admin Workstation<br/>Terraform / AWS SSO"]
 
-    subgraph Server["Dedicated Ubuntu Server 22.04 LTS"]
+    subgraph Server["OVHcloud Dedicated Server - Ubuntu 22.04 LTS"]
         direction TB
 
         subgraph Web["Containerized Web Layer"]
@@ -28,19 +31,24 @@ flowchart TB
             NodeExporter -->|"Read-only host view"| HostMetrics
         end
 
-        subgraph Native["Native Minecraft Workload"]
+        subgraph Native["Native Minecraft and Backup Workloads"]
             direction LR
 
             Tmux["tmux Console"]
             Minecraft["Minecraft Server<br/>Java / Paper"]
-            Cron["cron"]
-            Backup["backup_system.sh<br/>GFS Retention"]
-            BackupStorage["Backup Storage"]
+            PluginData["External Plugin Data<br/>/srv/plugins"]
+            Cron["cron<br/>Nightly backup"]
+            Backup["backup_system.sh<br/>Archive / Validate / GFS"]
+            BackupStorage["Local GFS Backups<br/>Daily / Weekly / Monthly"]
+            Uploader["upload_s3_backups.sh<br/>AWS CLI"]
 
             Tmux --> Minecraft
+            PluginData -.->|"plugins symlink"| Minecraft
             Cron --> Backup
             Backup -->|"Graceful stop / restart"| Minecraft
+            PluginData -.->|"Included in archive"| Backup
             Backup --> BackupStorage
+            BackupStorage --> Uploader
         end
 
         subgraph Security["Security and TLS Automation"]
@@ -60,17 +68,38 @@ flowchart TB
         end
     end
 
+    subgraph AWS["Amazon Web Services - us-east-2"]
+        direction TB
+
+        S3["Private S3 Backup Bucket<br/>Daily / Weekly / Monthly"]
+        IAM["IAM Backup Uploader<br/>Put / List - No Get / Delete"]
+        Lifecycle["S3 Lifecycle Policies<br/>Expiration / Version Cleanup"]
+
+        Lifecycle -.->|"Retention rules"| S3
+    end
+
     Internet -->|"HTTP / HTTPS"| Nginx
+    Players -->|"Minecraft protocol"| Minecraft
     Admin -->|"SSH / SFTP"| SSH
+    Admin --> Workstation
+
+    Workstation -->|"Terraform provisioning"| S3
+    Workstation -->|"Terraform provisioning"| IAM
+    Workstation -->|"Terraform provisioning"| Lifecycle
+
+    Uploader -->|"AWS CLI / HTTPS<br/>Offsite uploads"| S3
+    IAM -.->|"Least-privilege permissions"| Uploader
 
     classDef external fill:#ddf4ff,stroke:#0969da,stroke-width:2px,color:#24292f;
     classDef web fill:#fff8c5,stroke:#9a6700,stroke-width:2px,color:#24292f;
     classDef monitoring fill:#dafbe1,stroke:#1a7f37,stroke-width:2px,color:#24292f;
     classDef native fill:#fbefff,stroke:#8250df,stroke-width:2px,color:#24292f;
     classDef security fill:#ffebe9,stroke:#cf222e,stroke-width:2px,color:#24292f;
+    classDef cloud fill:#e6f4ea,stroke:#1a7f37,stroke-width:2px,color:#24292f;
 
-    class Internet,Admin external;
+    class Internet,Players,Admin,Workstation external;
     class Nginx,Static,Grafana web;
     class Prometheus,NodeExporter,HostMetrics monitoring;
-    class Tmux,Minecraft,Cron,Backup,BackupStorage native;
+    class Tmux,Minecraft,PluginData,Cron,Backup,BackupStorage,Uploader native;
     class SSH,UFW,Fail2Ban,Certbot,Certificates security;
+    class S3,IAM,Lifecycle cloud;
