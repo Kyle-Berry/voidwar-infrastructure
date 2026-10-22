@@ -1,360 +1,106 @@
+
 # VoidWar Infrastructure
 
-Linux server administration, security hardening, backup automation, containerized web services, TLS, and observability for **VoidWar**, a self-hosted multiplayer Minecraft server.
+My interest in Linux infrastructure began at 13, when I rented my first OVHcloud Kimsufi bare-metal server to host a multiplayer environment for friends. I learned through experimentation, broken configurations, and countless hours figuring out how remote systems worked. That fascination stayed with me and eventually led me to pursue a degree in Computer Science and earn the Red Hat Certified System Administrator (RHCSA) certification.
 
-VoidWar runs on a live remote bare-metal server rather than a temporary local lab. This repository contains sanitized production configuration, Bash automation, recovery procedures, architecture documentation, and operational runbooks based on the deployed environment.
+**VoidWar is the current culmination of that long-running interest:** a persistent, remotely administered Linux environment incorporating security hardening, infrastructure automation, containerized services, observability, and offsite cloud backups.
 
-## What This Project Demonstrates
+This repository documents the infrastructure I operate, the engineering decisions behind it, and the procedures used to maintain and recover it. It contains sanitized configuration, automation scripts, Terraform code, and operational documentation derived from a live deployment—not a disposable tutorial environment.
 
-- Linux server administration
-- SSH, UFW, and Fail2Ban hardening
-- Bash automation
-- Backup and disaster-recovery planning
-- Docker and Docker Compose
-- Nginx reverse proxying
-- HTTPS with Let's Encrypt
-- Automated certificate renewal
-- Prometheus and Node Exporter
-- Grafana provisioning and dashboards
-- Infrastructure validation and troubleshooting
-- Technical and operational documentation
+## Infrastructure at a Glance
+
+| Area | Implementation |
+|---|---|
+| **Compute** | OVHcloud dedicated bare-metal server running Ubuntu Server 22.04 LTS |
+| **Application workload** | Java/Paper Minecraft server managed natively with Bash and `tmux` |
+| **Web and TLS** | Dockerized Nginx, HTTPS via Let's Encrypt, automated certificate renewal |
+| **Observability** | Prometheus, Node Exporter, and Grafana |
+| **Security** | SSH key authentication, UFW, Fail2Ban, restricted service exposure |
+| **Local recovery** | Automated compressed backups with Grandfather-Father-Son retention |
+| **Offsite recovery** | Private Amazon S3 storage, IAM least privilege, lifecycle policies |
+| **Infrastructure as code** | Terraform provisioning for AWS backup resources |
 
 ## Architecture
 
 ![VoidWar infrastructure architecture](diagrams/architecture.png)
 
-The editable Mermaid source is available at [`diagrams/architecture.mmd`](diagrams/architecture.mmd).
+The Minecraft workload and supporting services run on the OVHcloud host. **AWS is used for offsite backup storage, not application hosting.** Terraform provisions the S3 and IAM resources from an administrative workstation.
 
-See [`docs/architecture.md`](docs/architecture.md) for the complete design.
+For the complete design, service boundaries, data flows, and tradeoffs, see [`docs/architecture.md`](docs/architecture.md). The diagram's editable source is [`diagrams/architecture.mmd`](diagrams/architecture.mmd).
 
-## Environment
+## Deployment and Operations
 
-VoidWar is hosted on a dedicated OVHcloud bare-metal server running Ubuntu Server 22.04 LTS.
+### Bare-Metal Linux Host
 
-### Hardware
+The environment runs on a dedicated server with an Intel Xeon E3-1230 v6, 16 GB ECC RAM, and two 450 GB NVMe drives configured as software RAID 0. The hardware provides a persistent remote environment at approximately $21 per month.
 
-- Intel Xeon E3-1230 v6
-- 4 cores / 8 threads
-- 16 GB ECC RAM
-- Dual 450 GB NVMe SSDs
-- Software RAID 0
-- 1 Gbps network connection
+RAID 0 provides no disk redundancy, making backup validation and offsite retention especially important to the recovery strategy.
 
-The environment uses older dedicated-server hardware to provide persistent compute, memory, and NVMe storage for approximately $22 per month.
+The Minecraft application runs directly on Ubuntu, with `tmux` preserving console access across SSH sessions. Supporting web and monitoring services run in Docker Compose. Runtime data and sensitive configuration remain outside the public repository.
 
-This creates a realistic remote Linux administration environment at substantially lower cost than many newer dedicated-server or public-cloud alternatives.
+### Public Web Services and Observability
 
-## Deployment Model
+Nginx terminates HTTPS for `voidwar.net` and reverse-proxies `grafana.voidwar.net` to Grafana. Let's Encrypt certificates are renewed through `certbot.timer`, with a deployment hook to validate and reload Nginx after renewal.
 
-The Minecraft server runs directly on Ubuntu as a native Linux workload managed through:
+The monitoring pipeline is **Node Exporter → Prometheus → Grafana**. Grafana is accessed through Nginx; Prometheus, Node Exporter, and Grafana's backend listener are bound to loopback rather than exposed directly to the internet.
 
-- Java
-- Bash
-- `tmux`
-- Cron
-- Standard Linux users, groups, ownership, and permissions
+See [`docs/nginx-tls-deployment.md`](docs/nginx-tls-deployment.md) and [`docs/monitoring-stack.md`](docs/monitoring-stack.md).
 
-Supporting infrastructure runs in Docker:
+### Security and Access Control
 
-- Nginx
-- Prometheus
-- Node Exporter
-- Grafana
+The host uses key-only SSH authentication, disabled direct root login, UFW's default-deny inbound policy, and Fail2Ban protection for SSH. Administrative and collaborator access is separated through Linux users, groups, and filesystem permissions.
 
-The live deployment is organized under:
+Docker services use restricted mounts and other hardening controls where appropriate. Credentials, private keys, certificates, backups, and runtime data are excluded from version control.
 
-```text
-/opt/voidwar/nginx
-/opt/voidwar/monitoring
-```
+See [`docs/security-hardening.md`](docs/security-hardening.md).
 
-Sanitized repository configuration is published under:
+## Backup and Recovery
 
-```text
-docker/nginx
-docker/monitoring
-```
+Nightly Bash automation coordinates player warnings, graceful Minecraft shutdown, compressed archive creation, service restart, logging, and local backup rotation. The local retention policy keeps **7 daily, 4 weekly, and 6 monthly** backups.
 
-Runtime data, credentials, certificates, metrics storage, logs, and generated application state are excluded from Git.
+Retained backups are also synchronized to a **private Amazon S3 bucket in `us-east-2`**, providing an offsite copy independent of the dedicated server. The AWS infrastructure is managed with Terraform and includes:
 
-## Public Web Infrastructure
+- A versioned, server-side-encrypted S3 bucket with lifecycle-based retention and version cleanup.
+- A dedicated IAM uploader identity limited to the S3 permissions needed for uploads and object listing, without object download or deletion permissions.
+- AWS CLI-based synchronization of retained local backups, designed to tolerate interrupted uploads and retry on a later run.
 
-Nginx runs in Docker with host networking and serves as the public HTTP and HTTPS entry point.
+Backup retrieval and archive integrity have been tested, including inspection of Minecraft world and external plugin data. **A full bare-metal disaster-recovery restore has not yet been performed.**
 
-It handles:
+See [`docs/backup-workflow.md`](docs/backup-workflow.md) and [`docs/restore-procedure.md`](docs/restore-procedure.md).
 
-```text
-voidwar.net
-www.voidwar.net
-grafana.voidwar.net
-```
+## Infrastructure as Code
 
-Implemented behavior includes:
+Terraform configuration under [`terraform/aws/`](terraform/aws/) manages the AWS resources used for offsite backups, with reusable modules and a development environment under `terraform/aws/environments/dev`.
 
-- HTTP-to-HTTPS redirection
-- Static content at `voidwar.net`
-- Canonical redirect from `www.voidwar.net`
-- TLS termination
-- ACME HTTP challenge handling
-- Reverse proxying to Grafana
-- Forwarded client and protocol headers
-- HTTP upgrade support
+Provisioning is performed from an administrative workstation using AWS SSO credentials. The dedicated server uses a narrowly scoped uploader identity rather than broad administrative credentials.
 
-TLS certificates are issued by Let's Encrypt and mounted read-only from:
+## Validation and Maintenance
 
-```text
-/etc/letsencrypt
-```
+Operational checks documented for this environment include:
 
-Certificate renewal is automated through `certbot.timer`.
+- Docker Compose configuration and Nginx syntax validation.
+- HTTPS endpoint checks, TLS inspection, and certificate-renewal testing.
+- Grafana and Prometheus health checks, target verification, and host-metric retrieval.
+- SSH, firewall, listening-address, and Fail2Ban verification.
+- Backup execution, restart behavior, S3 synchronization, and downloaded-archive inspection.
 
-After a successful renewal, a deploy hook validates and gracefully reloads the Nginx container.
-
-See [`docs/nginx-tls-deployment.md`](docs/nginx-tls-deployment.md).
-
-## Monitoring and Observability
-
-The monitoring pipeline is:
-
-```text
-Node Exporter -> Prometheus -> Grafana
-```
-
-### Node Exporter
-
-Node Exporter collects Linux host metrics such as:
-
-- CPU utilization
-- Memory usage
-- Filesystem capacity
-- Disk activity
-- Network activity
-- System load
-
-It listens only on:
-
-```text
-127.0.0.1:9100
-```
-
-### Prometheus
-
-Prometheus scrapes:
-
-```text
-127.0.0.1:9090
-127.0.0.1:9100
-```
-
-These targets provide Prometheus self-monitoring and Node Exporter host metrics.
-
-The deployment uses:
-
-- 15-second scrape interval
-- 15-second evaluation interval
-- 30-day retention
-- Persistent Docker volume storage
-
-Prometheus listens only on:
-
-```text
-127.0.0.1:9090
-```
-
-### Grafana
-
-Grafana queries Prometheus and displays the collected metrics through dashboards.
-
-It listens only on:
-
-```text
-127.0.0.1:3000
-```
-
-Public access is provided through Nginx at:
-
-```text
-https://grafana.voidwar.net
-```
-
-The Prometheus data source is provisioned automatically.
-
-The live environment currently uses the community-maintained Node Exporter Full dashboard. The dashboard itself is not represented as original work created by this project.
-
-See [`docs/monitoring-stack.md`](docs/monitoring-stack.md).
-
-## Service Exposure
-
-| Service | Listening address | Publicly reachable |
-|---|---|---|
-| Nginx HTTP | Public port 80 | Yes |
-| Nginx HTTPS | Public port 443 | Yes |
-| Grafana | `127.0.0.1:3000` | Through Nginx only |
-| Prometheus | `127.0.0.1:9090` | No |
-| Node Exporter | `127.0.0.1:9100` | No |
-
-The monitoring containers use host networking, so internal services are explicitly bound to the loopback interface.
-
-## Security Hardening
-
-### SSH
-
-Remote administration uses public-key authentication.
-
-Implemented controls include:
-
-- Ed25519 SSH keys
-- Disabled direct root login
-- Disabled password authentication
-- Non-root administrative account
-- Custom SSH listening port
-- Explicit user access controls
-
-Example configuration:
-
-```text
-config/ssh/sshd_config.example
-```
-
-### Firewall
-
-UFW enforces a minimal-exposure policy:
-
-- Deny unsolicited inbound traffic by default
-- Allow only required service ports
-- Keep monitoring backends private
-- Disable IPv6 where it is not currently required
-
-Example rules:
-
-```text
-config/ufw/ufw-rules.example
-```
-
-### Fail2Ban
-
-Fail2Ban monitors SSH events through the systemd journal.
-
-The SSH jail includes:
-
-- `systemd` backend
-- Repeated-failure detection
-- Temporary bans
-- Custom SSH port protection
-- Loopback exclusions
-- Firewall-based enforcement
-
-Example configuration:
-
-```text
-config/fail2ban/custom_hardening.local.example
-```
-
-Detailed documentation is available in [`docs/security-hardening.md`](docs/security-hardening.md).
-
-## User and Permission Management
-
-The server uses separate Linux accounts to limit unnecessary privilege exposure.
-
-Implemented practices include:
-
-- Non-root administration
-- Limited collaborator permissions
-- Controlled access to project directories
-- Standard ownership and permission enforcement
-- Shared group access where appropriate
-- Symbolic links to approved workspaces
-
-Collaborators can access specific project areas without receiving broad administrative access to the server.
-
-## Backup Automation
-
-The repository includes:
-
-```text
-scripts/backup_system.sh
-```
-
-The backup workflow provides:
-
-- Timestamped compressed archives
-- Player-facing maintenance warnings
-- Graceful Minecraft shutdown
-- Process-aware shutdown waiting
-- Automatic restart when appropriate
-- Preservation of an intentionally stopped state
-- Error and cancellation handling
-- Cron-compatible logging
-- Grandfather-Father-Son retention
-
-Retention includes:
-
-- 7 daily backups
-- 4 weekly backups
-- 6 monthly backups
-
-Additional workstation copies are maintained for disaster recovery.
-
-Documentation:
-
-- [`docs/backup-workflow.md`](docs/backup-workflow.md)
-- [`docs/restore-procedure.md`](docs/restore-procedure.md)
-
-## Session and Process Management
-
-`tmux` keeps the Minecraft console available independently of individual SSH sessions.
-
-This allows:
-
-- The server process to survive SSH disconnects
-- Administrators to reconnect to the live console
-- Automation to send console commands
-- Backup scripts to issue warnings and graceful shutdowns
-
-## Container Security Controls
-
-The Docker deployment uses:
-
-- Pinned image versions
-- `restart: unless-stopped`
-- Read-only configuration mounts
-- Read-only certificate mounts
-- Read-only host filesystem access for Node Exporter
-- Loopback-only monitoring listeners
-- `no-new-privileges:true`
-- Credentials supplied outside source control
-- Separation of source configuration and runtime data
-
-The Grafana deployment requires a local ignored `.env` file.
-
-A safe template is provided at:
-
-```text
-docker/monitoring/.env.example
-```
+Maintenance procedures and troubleshooting steps are documented in [`docs/maintenance-runbook.md`](docs/maintenance-runbook.md).
 
 ## Repository Structure
 
 ```text
 .
-├── config/
+├── config/                         # Sanitized security configuration
 │   ├── fail2ban/
 │   ├── ssh/
 │   └── ufw/
-├── docker/
-│   ├── monitoring/
-│   │   ├── grafana/
-│   │   ├── prometheus/
-│   │   ├── .env.example
-│   │   └── compose.yaml
-│   └── nginx/
-│       ├── conf/
-│       ├── html/
-│       └── compose.yaml
 ├── diagrams/
-│   ├── architecture.mmd
-│   └── architecture.svg
-├── docs/
+│   ├── architecture.mmd            # Editable Mermaid source
+│   └── architecture.png            # Architecture diagram
+├── docker/
+│   ├── monitoring/                 # Prometheus, Grafana, Node Exporter
+│   └── nginx/                      # HTTPS reverse proxy and static site
+├── docs/                           # Architecture and operational documentation
 │   ├── architecture.md
 │   ├── backup-workflow.md
 │   ├── maintenance-runbook.md
@@ -363,87 +109,63 @@ docker/monitoring/.env.example
 │   ├── restore-procedure.md
 │   └── security-hardening.md
 ├── scripts/
-│   ├── backup_system.sh
-│   └── verify_infrastructure.sh
+│   ├── backup_system.sh            # Local backup and retention automation
+│   ├── upload_s3_backups.sh        # Offsite S3 backup synchronization
+│   └── verify_infrastructure.sh    # Infrastructure validation
+├── terraform/
+│   └── aws/
+│       ├── environments/
+│       │   └── dev/                # Terraform root configuration
+│       └── modules/
+│           ├── iam-backup-uploader/ # Least-privilege IAM resources
+│           └── s3-backups/         # S3 bucket and lifecycle configuration
 ├── .gitignore
 └── README.md
 ```
 
-## Documentation
+## Technical Documentation
 
-### Architecture and Services
+| Document | Focus |
+|---|---|
+| [Architecture](docs/architecture.md) | Components, trust boundaries, data flows, and design decisions |
+| [Backup Workflow](docs/backup-workflow.md) | Backup execution, retention, and offsite synchronization |
+| [Restore Procedure](docs/restore-procedure.md) | Recovery steps and verification |
+| [Security Hardening](docs/security-hardening.md) | SSH, firewall, Fail2Ban, and access controls |
+| [Monitoring Stack](docs/monitoring-stack.md) | Prometheus, Node Exporter, and Grafana |
+| [Nginx and TLS Deployment](docs/nginx-tls-deployment.md) | HTTPS, reverse proxying, and certificate renewal |
+| [Maintenance Runbook](docs/maintenance-runbook.md) | Routine operations and troubleshooting |
 
-- [`docs/architecture.md`](docs/architecture.md)
-- [`docs/monitoring-stack.md`](docs/monitoring-stack.md)
-- [`docs/nginx-tls-deployment.md`](docs/nginx-tls-deployment.md)
 
-### Security and Operations
+## Future Improvements
 
-- [`docs/security-hardening.md`](docs/security-hardening.md)
-- [`docs/maintenance-runbook.md`](docs/maintenance-runbook.md)
+VoidWar is an ongoing infrastructure engineering project. Future development will focus on improving operational reliability, automation, observability, and disaster recovery while preserving the existing bare-metal architecture.
 
-### Backup and Recovery
+### Reliability and Disaster Recovery
 
-- [`docs/backup-workflow.md`](docs/backup-workflow.md)
-- [`docs/restore-procedure.md`](docs/restore-procedure.md)
+- Perform a complete disaster-recovery exercise, restoring Minecraft world data, external plugin data, and application configuration from S3 backups into an isolated environment.
+- Validate recovery procedures against realistic failure scenarios, including complete loss of the primary server.
+- Establish documented recovery time and recovery point objectives (RTO/RPO).
+- Introduce automated backup health checks and notifications for failed or missed uploads.
 
-## Repository Security
+### Monitoring and Observability
 
-This repository intentionally excludes:
+- Implement Prometheus alerting rules and Alertmanager notifications for infrastructure failures and resource exhaustion.
+- Deploy external uptime monitoring for public services.
+- Develop custom Grafana dashboards tailored to the Minecraft workload and supporting infrastructure.
+- Expand application-level monitoring beyond host metrics to include Minecraft process health and service availability.
 
-- SSH private keys
-- TLS private keys and certificates
-- Certbot account data
-- Real `.env` files
-- Administrator passwords
-- Grafana databases and runtime data
-- Prometheus metrics storage
-- ACME challenge runtime files
-- Server backups
-- Logs and temporary files
+### Security and Infrastructure Automation
 
-Configuration is sanitized before publication.
+- Develop a controlled, automated security-update workflow with appropriate validation and rollback procedures.
+- Introduce CI/CD checks for repository configuration, shell scripts, and Terraform code.
+- Expand infrastructure validation to detect configuration drift and common operational failures.
+- Continue refining least-privilege access, credential management, and operational security practices.
 
-## Validation
+### Infrastructure as Code and Cloud Expansion
 
-The deployed environment has been validated through:
+- Extend Terraform coverage where it provides meaningful operational benefits.
+- Improve Terraform module testing, documentation, and automated validation.
+- Evaluate additional AWS services where they solve practical infrastructure problems rather than introducing unnecessary complexity.
+- Explore Microsoft Azure as a potential future platform for additional infrastructure and automation experience.
 
-- Docker Compose configuration rendering
-- Nginx configuration testing
-- HTTP and HTTPS endpoint checks
-- TLS certificate inspection
-- Certbot renewal simulation
-- Grafana health checks
-- Prometheus health and target checks
-- Node Exporter metrics retrieval
-- Listening-address verification
-- Container status and log inspection
-- Fail2Ban journal and jail inspection
-- Backup and restart workflow testing
-
-## Planned Improvements
-
-Potential future additions include:
-
-- Custom Grafana dashboards
-- Prometheus alerting rules
-- External uptime monitoring
-- Additional off-host backup automation
-- Automated security-update workflow
-- Expanded application-level monitoring
-
-## Project Goal
-
-VoidWar began as a multiplayer Minecraft server, but the infrastructure project extends beyond running the game itself.
-
-The server serves as a practical platform for building and documenting:
-
-- Secure Linux administration
-- Production-style automation
-- Containerized supporting services
-- Public HTTPS infrastructure
-- Monitoring and observability
-- Backup and recovery procedures
-- Repeatable operational workflows
-
-The goal is to demonstrate the ability to build, secure, operate, monitor, troubleshoot, and document a persistent remote Linux environment.
+The long-term objective is to evolve VoidWar into an increasingly reliable, observable, secure, and reproducible infrastructure environment, with each improvement implemented and validated against real operational requirements.
