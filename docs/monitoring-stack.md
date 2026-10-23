@@ -1,30 +1,27 @@
-# VoidWar Monitoring Stack
 
-This document covers deployment, validation, operation, and troubleshooting for the VoidWar monitoring stack.
+# Monitoring Stack
 
-For the full system design and traffic flow, see [`architecture.md`](architecture.md).
+This document describes the deployment, configuration, and operation of the VoidWar monitoring stack.
+
+The stack runs through Docker Compose on the OVHcloud bare-metal Ubuntu host and provides visibility into Linux system metrics.
+
+For overall infrastructure design, see [Architecture](architecture.md).
 
 ## Components
 
-The monitoring stack contains:
+The monitoring stack consists of three services:
 
-- Node Exporter for Linux host metrics
-- Prometheus for metrics collection and storage
-- Grafana for dashboards and visualization
-
-The services run through Docker Compose.
+| Component | Purpose |
+|---|---|
+| Node Exporter | Exposes Linux host metrics |
+| Prometheus | Scrapes and stores time-series metrics |
+| Grafana | Provides dashboards and visualization |
 
 The live deployment directory is:
 
-```text
-/opt/voidwar/monitoring
-```
+`/opt/voidwar/monitoring`
 
-The sanitized repository configuration is stored under:
-
-```text
-docker/monitoring
-```
+The sanitized configuration is maintained under `docker/monitoring/` in the repository.
 
 ## Repository Layout
 
@@ -41,41 +38,43 @@ docker/monitoring/
     └── prometheus.yml
 ```
 
-Runtime data is intentionally excluded from Git.
+Runtime databases, credentials, and metrics storage are excluded from version control.
 
-## Container Images
+## Docker Configuration
 
-The stack currently uses:
+The stack uses versioned container images:
 
-```text
-quay.io/prometheus/node-exporter:v1.12.1
-prom/prometheus:v3.5.2
-grafana/grafana-oss:12.1.1
-```
+| Service | Image |
+|---|---|
+| Node Exporter | `quay.io/prometheus/node-exporter:v1.12.1` |
+| Prometheus | `prom/prometheus:v3.5.2` |
+| Grafana | `grafana/grafana-oss:12.1.1` |
 
-Image versions are pinned rather than using floating `latest` tags.
+All three services use Docker host networking.
 
-## Service Bindings
+### Network Exposure
 
-All monitoring services use Docker host networking and bind only to the host loopback interface.
-
-| Service | Address |
+| Service | Listening address |
 |---|---|
 | Grafana | `127.0.0.1:3000` |
 | Prometheus | `127.0.0.1:9090` |
 | Node Exporter | `127.0.0.1:9100` |
 
-Grafana is exposed publicly only through the Nginx reverse proxy at:
+The monitoring services bind to loopback rather than public interfaces.
 
-```text
-https://grafana.voidwar.net
-```
+Grafana is accessed externally through the Nginx HTTPS reverse proxy:
 
-Prometheus and Node Exporter are not publicly exposed.
+`https://grafana.voidwar.net`
+
+Prometheus and Node Exporter are not exposed publicly.
+
+Because host networking shares the host's network namespace, service-level listening addresses are important for restricting access.
 
 ## Node Exporter
 
-Node Exporter runs with access to the host PID namespace and a read-only mount of the host filesystem.
+Node Exporter collects Linux host metrics such as CPU, memory, filesystem, disk I/O, and network activity.
+
+The container uses the host PID namespace and a read-only host filesystem mount.
 
 Relevant Compose settings:
 
@@ -91,514 +90,296 @@ volumes:
   - /:/host:ro,rslave
 ```
 
-The `--path.rootfs=/host` option allows the containerized exporter to report host metrics.
+The `--path.rootfs=/host` setting allows Node Exporter to collect host-level metrics from its containerized environment.
 
-The `--web.listen-address` option restricts the metrics endpoint to loopback.
+The metrics endpoint is available locally at:
+
+`http://127.0.0.1:9100/metrics`
 
 ## Prometheus
 
-Prometheus is configured through:
+Prometheus scrapes and stores metrics from Node Exporter and its own monitoring endpoint.
 
-```text
-docker/monitoring/prometheus/prometheus.yml
-```
+Configuration file:
 
-The current scrape interval is:
+`docker/monitoring/prometheus/prometheus.yml`
 
-```text
-15 seconds
-```
+### Collection Settings
 
-Prometheus scrapes:
+| Setting | Value |
+|---|---|
+| Scrape interval | 15 seconds |
+| Data retention | 30 days |
+| Listening address | `127.0.0.1:9090` |
+| Storage | Docker named volume |
 
-```text
-127.0.0.1:9090
-127.0.0.1:9100
-```
+The Prometheus storage volume is named:
 
-These targets represent:
+`monitoring_prometheus-data`
 
-- Prometheus self-monitoring
-- Node Exporter host metrics
+### Scrape Targets
 
-Prometheus listens only on:
+| Job | Target |
+|---|---|
+| `prometheus` | `127.0.0.1:9090` |
+| `node-exporter` | `127.0.0.1:9100` |
 
-```text
-127.0.0.1:9090
-```
+Both targets should report `up` when the services are healthy.
 
-Metrics are retained for:
+### Configuration Reload
 
-```text
-30 days
-```
+Prometheus runs with `--web.enable-lifecycle`, allowing its configuration to be reloaded without recreating the container.
 
-Prometheus data is stored in the Docker named volume:
-
-```text
-monitoring_prometheus-data
-```
-
-## Grafana
-
-Grafana listens only on:
-
-```text
-127.0.0.1:3000
-```
-
-Its public root URL is:
-
-```text
-https://grafana.voidwar.net
-```
-
-Grafana runtime state is stored under:
-
-```text
-/opt/voidwar/monitoring/grafana/data
-```
-
-This directory contains application-generated data such as:
-
-- `grafana.db`
-- User accounts
-- Dashboard state
-- Installed plugins
-- Application settings
-
-This directory is excluded from Git.
-
-## Grafana Data Source Provisioning
-
-The Prometheus data source is provisioned through:
-
-```text
-docker/monitoring/grafana/provisioning/datasources/prometheus.yml
-```
-
-It uses:
-
-```text
-http://127.0.0.1:9090
-```
-
-as the Prometheus URL.
-
-Because both services use host networking, Grafana can access Prometheus through the host loopback interface.
-
-## Grafana Administrator Credentials
-
-The repository Compose file reads the initial Grafana administrator credentials from environment variables:
-
-```yaml
-GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
-```
-
-Create a local environment file before a fresh deployment:
-
-```bash
-cp .env.example .env
-```
-
-Then replace the placeholder password in `.env` with a strong unique value.
-
-The real `.env` file is excluded from Git.
-
-These values are primarily used when Grafana initializes a new database. Changing them later does not necessarily replace credentials already stored in an existing `grafana.db`.
-
-## Fresh Deployment
-
-Move into the monitoring directory:
-
-```bash
-cd docker/monitoring
-```
-
-Create the environment file:
-
-```bash
-cp .env.example .env
-```
-
-Edit the credentials:
-
-```bash
-nano .env
-```
-
-Validate the Compose configuration:
-
-```bash
-docker compose config
-```
-
-Start the stack:
-
-```bash
-docker compose up -d
-```
-
-Do not start the repository copy on the production host while the live stack is already running from `/opt/voidwar/monitoring`.
-
-Doing so would cause container-name, port, and volume conflicts.
-
-## Container Status
-
-Check the stack:
-
-```bash
-docker compose ps
-```
-
-Or inspect the named containers:
-
-```bash
-docker ps \
-  --filter name=voidwar-node-exporter \
-  --filter name=voidwar-prometheus \
-  --filter name=voidwar-grafana
-```
-
-Expected container names:
-
-```text
-voidwar-node-exporter
-voidwar-prometheus
-voidwar-grafana
-```
-
-## Validate the Compose File
-
-Run:
-
-```bash
-docker compose config
-```
-
-This renders the effective configuration and detects syntax or environment-variable errors.
-
-## Verify Listening Addresses
-
-Run:
-
-```bash
-sudo ss -lntp | grep -E ':(3000|9090|9100)\b'
-```
-
-Expected listeners:
-
-```text
-127.0.0.1:3000
-127.0.0.1:9090
-127.0.0.1:9100
-```
-
-A listener on `0.0.0.0`, `[::]`, or `*` should be investigated.
-
-## Verify Grafana
-
-Check Grafana health:
-
-```bash
-curl -fsS http://127.0.0.1:3000/api/health
-```
-
-A healthy response should include:
-
-```json
-{
-  "database": "ok"
-}
-```
-
-Check the public endpoint:
-
-```bash
-curl -I https://grafana.voidwar.net
-```
-
-The expected response is a redirect to:
-
-```text
-/login
-```
-
-## Verify Prometheus
-
-Check Prometheus health:
-
-```bash
-curl -fsS http://127.0.0.1:9090/-/healthy
-```
-
-Expected response:
-
-```text
-Prometheus Server is Healthy.
-```
-
-Check active scrape targets:
-
-```bash
-curl -fsS http://127.0.0.1:9090/api/v1/targets
-```
-
-Expected jobs:
-
-```text
-prometheus
-node-exporter
-```
-
-Both should report:
-
-```text
-health: up
-```
-
-## Verify Node Exporter
-
-Check the metrics endpoint:
-
-```bash
-curl -fsS http://127.0.0.1:9100/metrics | sed -n '1,20p'
-```
-
-A healthy response contains Prometheus-formatted metrics.
-
-Using `sed` instead of `head` avoids closing the connection early and producing harmless broken-pipe log messages.
-
-## View Logs
-
-Node Exporter:
-
-```bash
-docker logs --tail 100 voidwar-node-exporter
-```
-
-Prometheus:
-
-```bash
-docker logs --tail 100 voidwar-prometheus
-```
-
-Grafana:
-
-```bash
-docker logs --tail 100 voidwar-grafana
-```
-
-Follow a log in real time:
-
-```bash
-docker logs -f voidwar-prometheus
-```
-
-## Apply Configuration Changes
-
-Validate the Compose file before applying changes:
-
-```bash
-docker compose config
-```
-
-Recreate a single service:
-
-```bash
-docker compose up -d node-exporter
-docker compose up -d prometheus
-docker compose up -d grafana
-```
-
-Recreate the full stack:
-
-```bash
-docker compose up -d
-```
-
-Persistent Prometheus and Grafana data should survive normal container recreation.
-
-## Reload Prometheus Configuration
-
-Prometheus runs with:
-
-```text
---web.enable-lifecycle
-```
-
-After changing `prometheus.yml`, reload the configuration:
+After updating `prometheus.yml`:
 
 ```bash
 curl -X POST http://127.0.0.1:9090/-/reload
 ```
 
-Then verify target status:
+Verify target health afterward:
 
 ```bash
 curl -fsS http://127.0.0.1:9090/api/v1/targets
 ```
 
-Prometheus can also be recreated:
-
-```bash
-docker compose up -d prometheus
-```
-
-## Stop the Stack
-
-Stop containers without removing them:
-
-```bash
-docker compose stop
-```
-
-Stop and remove the containers:
-
-```bash
-docker compose down
-```
-
-Do not use:
-
-```bash
-docker compose down -v
-```
-
-unless deleting the Prometheus metrics volume is intentional.
-
-## Troubleshooting Grafana
-
-If Grafana is unavailable publicly, test it locally:
-
-```bash
-curl -I http://127.0.0.1:3000
-```
-
-If the local request works, investigate:
-
-- Nginx container status
-- Nginx reverse-proxy configuration
-- DNS resolution
-- TLS certificate validity
-- Firewall rules
-
-Check Grafana logs:
-
-```bash
-docker logs --tail 100 voidwar-grafana
-```
-
-## Troubleshooting Missing Dashboard Data
-
-If Grafana loads but displays no metrics, verify:
-
-```bash
-curl -fsS http://127.0.0.1:9090/-/healthy
-curl -fsS http://127.0.0.1:9090/api/v1/targets
-```
-
-Confirm that the Grafana data source uses:
-
-```text
-http://127.0.0.1:9090
-```
-
-Check Grafana logs for data-source errors.
-
-## Troubleshooting Node Exporter
-
-If Prometheus reports Node Exporter as down:
-
-```bash
-docker ps --filter name=voidwar-node-exporter
-sudo ss -lntp | grep ':9100\b'
-curl -fsS http://127.0.0.1:9100/metrics
-docker logs --tail 100 voidwar-node-exporter
-```
-
-Confirm the expected options remain present:
-
-```text
---path.rootfs=/host
---web.listen-address=127.0.0.1:9100
-```
-
-Confirm the host mount remains:
-
-```text
-/:/host:ro,rslave
-```
-
-## Troubleshooting Prometheus
-
-If Prometheus is unhealthy:
-
-```bash
-sudo ss -lntp | grep ':9090\b'
-curl -fsS http://127.0.0.1:9090/-/healthy
-docker logs --tail 100 voidwar-prometheus
-```
-
-Validate its mounted configuration:
+Configuration can also be validated with:
 
 ```bash
 docker exec voidwar-prometheus \
   promtool check config /etc/prometheus/prometheus.yml
 ```
 
-## Runtime Data and Secret Exclusions
+## Grafana
 
-The repository excludes:
+Grafana provides dashboards for viewing metrics collected by Prometheus.
 
-```text
-grafana/data/
-grafana.db
-grafana-data/
-prometheus-data/
-data/
-.env
-.env.*
+Its public URL is:
+
+`https://grafana.voidwar.net`
+
+Nginx terminates HTTPS and forwards requests to the local Grafana listener at `127.0.0.1:3000`.
+
+### Data Source Provisioning
+
+The Prometheus data source is provisioned from:
+
+`docker/monitoring/grafana/provisioning/datasources/prometheus.yml`
+
+The configured data source URL is:
+
+`http://127.0.0.1:9090`
+
+Because both services use host networking, Grafana can reach Prometheus through the host loopback interface.
+
+### Persistent Data
+
+Grafana application data is stored under:
+
+`/opt/voidwar/monitoring/grafana/data`
+
+This includes the Grafana database, user accounts, dashboard state, and installed plugins.
+
+The directory is excluded from Git.
+
+### Administrator Credentials
+
+The Compose configuration reads the initial administrator credentials from environment variables:
+
+```yaml
+GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
 ```
 
-The following must never be committed:
+A local `.env` file supplies the credentials and is excluded from version control.
 
-- Real `.env` files
-- Grafana administrator passwords
-- Grafana databases
-- Prometheus time-series data
-- Prometheus write-ahead logs
-- User sessions
-- API tokens
-- Installed plugin runtime files
+These variables initialize credentials for a new Grafana database. Changing them later does not necessarily update credentials already stored in an existing database.
 
-The safe template remains trackable through:
+## Deployment
 
-```text
-!.env.example
+The repository contains a sanitized deployment example.
+
+For a new deployment, navigate to:
+
+```bash
+cd docker/monitoring
 ```
 
-## Operational Checklist
+Create the local environment file:
 
-After deployment or maintenance, verify:
+```bash
+cp .env.example .env
+```
 
-- [ ] All three containers are running
-- [ ] Grafana listens on `127.0.0.1:3000`
-- [ ] Prometheus listens on `127.0.0.1:9090`
-- [ ] Node Exporter listens on `127.0.0.1:9100`
-- [ ] Grafana reports `database: ok`
-- [ ] Prometheus reports healthy
-- [ ] Node Exporter returns metrics
-- [ ] Both Prometheus targets report `up`
-- [ ] Grafana can query Prometheus
-- [ ] The public Grafana URL reaches the login page
-- [ ] No runtime data or real `.env` file is staged in Git
+Edit `.env` and configure a strong, unique Grafana administrator password.
+
+Validate the Compose configuration:
+
+```bash
+docker compose config -q
+```
+
+Start the services:
+
+```bash
+docker compose up -d
+```
+
+**Production note:** The live stack already runs from `/opt/voidwar/monitoring`. Do not start a second copy from the repository on the same host, as this could cause container-name, port, and storage conflicts.
+
+## Routine Operations
+
+Run production Compose commands from the live deployment directory:
+
+```bash
+cd /opt/voidwar/monitoring
+```
+
+### Check Service Status
+
+```bash
+docker compose ps
+```
+
+Expected containers:
+
+- `voidwar-node-exporter`
+- `voidwar-prometheus`
+- `voidwar-grafana`
+
+### Inspect Logs
+
+```bash
+docker logs --tail 100 voidwar-node-exporter
+docker logs --tail 100 voidwar-prometheus
+docker logs --tail 100 voidwar-grafana
+```
+
+### Apply Configuration Changes
+
+Validate Compose before applying changes:
+
+```bash
+docker compose config -q
+```
+
+Recreate an individual service when required:
+
+```bash
+docker compose up -d prometheus
+```
+
+Or reconcile the full stack:
+
+```bash
+docker compose up -d
+```
+
+Normal container recreation should preserve persistent data stored in configured volumes and bind mounts.
+
+Avoid `docker compose down -v` unless removal of named volumes and their stored data is intentional.
+
+## Health Verification
+
+### Verify Listening Addresses
+
+```bash
+sudo ss -lntp | grep -E ':(3000|9090|9100)\b'
+```
+
+All three services should listen on `127.0.0.1`, not public interfaces.
+
+### Node Exporter
+
+```bash
+curl -fsS http://127.0.0.1:9100/metrics \
+  | sed -n '1,20p'
+```
+
+Expected result: Prometheus-formatted metrics.
+
+### Prometheus
+
+```bash
+curl -fsS http://127.0.0.1:9090/-/healthy
+curl -fsS http://127.0.0.1:9090/api/v1/targets
+```
+
+Expected result: Prometheus is healthy, with the `prometheus` and `node-exporter` targets reporting `up`.
+
+### Grafana
+
+```bash
+curl -fsS http://127.0.0.1:3000/api/health
+curl -I https://grafana.voidwar.net
+```
+
+Expected result: Grafana reports a healthy database, and its public HTTPS endpoint normally redirects unauthenticated requests to `/login`.
+
+The repository's `scripts/verify_infrastructure.sh` automates several container, listener, endpoint, and service-health checks.
+
+## Troubleshooting
+
+### Grafana Is Unavailable
+
+First test the local service:
+
+```bash
+curl -fsS http://127.0.0.1:3000/api/health
+```
+
+If Grafana is healthy locally but unavailable publicly, investigate Nginx, DNS, TLS, and firewall configuration.
+
+See [Nginx and TLS Deployment](nginx-tls-deployment.md).
+
+### Dashboards Show No Metrics
+
+Check Prometheus and its scrape targets:
+
+```bash
+curl -fsS http://127.0.0.1:9090/-/healthy
+curl -fsS http://127.0.0.1:9090/api/v1/targets
+```
+
+Verify that the Grafana data source points to `http://127.0.0.1:9090`.
+
+If Node Exporter is down, inspect its container logs, host mount, and port 9100 listener.
+
+### Prometheus Is Unhealthy
+
+Check the logs and validate the configuration:
+
+```bash
+docker logs --tail 100 voidwar-prometheus
+
+docker exec voidwar-prometheus \
+  promtool check config /etc/prometheus/prometheus.yml
+```
+
+Also verify the configured storage volume and available disk space.
+
+## Repository Hygiene
+
+The public repository excludes:
+
+- Real `.env` files and administrator credentials
+- Grafana databases and user sessions
+- Prometheus time-series data and write-ahead logs
+- API tokens and application secrets
+- Generated runtime files
+
+Only sanitized configuration, provisioning definitions, and deployment documentation are tracked.
+
+## Related Documentation
+
+- [Architecture](architecture.md)
+- [Nginx and TLS Deployment](nginx-tls-deployment.md)
+- [Security Hardening](security-hardening.md)
+- [Maintenance Runbook](maintenance-runbook.md)
 
 ## Summary
 
-The VoidWar monitoring stack uses Node Exporter, Prometheus, and Grafana to provide host-level visibility.
+VoidWar uses Node Exporter, Prometheus, and Grafana to monitor Linux host performance through a Docker Compose deployment.
 
-All monitoring services are restricted to the host loopback interface. Grafana is exposed externally only through the Nginx HTTPS reverse proxy, while Prometheus and Node Exporter remain private.
+Metrics collection and visualization remain bound to loopback interfaces, while Grafana is accessible externally through the Nginx HTTPS reverse proxy.
 
-The repository contains the sanitized deployment configuration and provisioning files while excluding credentials, databases, metrics storage, and other runtime data.
+The repository preserves the deployment configuration without exposing credentials or persistent monitoring data.
