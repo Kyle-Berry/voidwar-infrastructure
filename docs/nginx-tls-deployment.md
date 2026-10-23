@@ -1,35 +1,26 @@
-# VoidWar Nginx and TLS Deployment
 
-This document covers deployment, validation, operation, and troubleshooting for the VoidWar Nginx reverse proxy and TLS configuration.
+# Nginx and TLS Deployment
 
-For the complete infrastructure design and traffic flow, see [`architecture.md`](architecture.md).
+This document describes the deployment and operation of the VoidWar Nginx reverse proxy, including HTTPS, Let's Encrypt certificate renewal, and Grafana access.
 
-## Purpose
+Nginx runs in Docker on the OVHcloud bare-metal Ubuntu host and serves as the public HTTP/HTTPS entry point.
 
-Nginx provides the public web entry point for the VoidWar infrastructure.
+For overall infrastructure design, see [Architecture](architecture.md).
 
-It is responsible for:
+## Responsibilities
 
-- Listening publicly on ports 80 and 443
-- Redirecting HTTP traffic to HTTPS
-- Serving the static `voidwar.net` landing page
-- Redirecting `www.voidwar.net` to the canonical non-`www` hostname
-- Terminating TLS
-- Serving ACME HTTP challenge files
-- Reverse-proxying `grafana.voidwar.net` to Grafana
-- Forwarding the original request context to Grafana
+Nginx provides:
 
-The live deployment directory is:
+- Public HTTP and HTTPS listeners on ports 80 and 443
+- HTTP-to-HTTPS redirects
+- A static landing page at `voidwar.net`
+- Canonical redirects from `www.voidwar.net`
+- HTTPS reverse proxying for `grafana.voidwar.net`
+- ACME HTTP challenge handling for certificate renewal
 
-```text
-/opt/voidwar/nginx
-```
+The live deployment directory is `/opt/voidwar/nginx`.
 
-The sanitized repository configuration is stored under:
-
-```text
-docker/nginx
-```
+The sanitized repository configuration is maintained under `docker/nginx/`.
 
 ## Repository Layout
 
@@ -43,331 +34,73 @@ docker/nginx/
     └── index.html
 ```
 
-The repository does not contain:
+The repository excludes live certificates, private keys, Certbot account data, ACME runtime files, and logs.
 
-- Private keys
-- Live certificates
-- ACME challenge runtime files
-- Certbot account data
-- Logs
-- Other generated runtime data
+## Docker Deployment
 
-## Container Image
+The deployment uses the `nginx:1.29-alpine` image and a container named `voidwar-nginx`.
 
-The Nginx service currently uses:
-
-```text
-nginx:1.29-alpine
-```
-
-The image version is pinned to the Nginx 1.29 Alpine release series instead of using the floating `latest` tag.
-
-Image upgrades should be tested before changing the configured tag.
-
-## Docker Compose Configuration
-
-The Nginx stack is defined in:
-
-```text
-docker/nginx/compose.yaml
-```
-
-The deployed container name is:
-
-```text
-voidwar-nginx
-```
-
-The service uses:
+Important Compose settings:
 
 ```yaml
 restart: unless-stopped
 network_mode: host
 ```
 
-Host networking allows Nginx to:
+Host networking allows Nginx to bind directly to ports 80 and 443 and reach Grafana at `127.0.0.1:3000`.
 
-- Bind directly to host ports 80 and 443
-- Reach Grafana at `127.0.0.1:3000`
-- Avoid exposing Grafana through a public Docker port mapping
+No Docker `ports:` mapping is required.
 
-Because host networking is used, no `ports:` section is required.
-
-## Mounted Files and Directories
-
-The Compose file mounts:
-
-```yaml
-volumes:
-  - ./html:/usr/share/nginx/html:ro
-  - ./conf/default.conf:/etc/nginx/conf.d/default.conf:ro
-  - ./certbot:/var/www/certbot:ro
-  - /etc/letsencrypt:/etc/letsencrypt:ro
-```
-
-These mounts provide:
+### Bind Mounts
 
 | Host path | Container path | Purpose |
 |---|---|---|
-| `./html` | `/usr/share/nginx/html` | Static website content |
-| `./conf/default.conf` | `/etc/nginx/conf.d/default.conf` | Nginx virtual-host configuration |
-| `./certbot` | `/var/www/certbot` | ACME HTTP challenge files |
-| `/etc/letsencrypt` | `/etc/letsencrypt` | TLS certificates and private keys |
+| `./html` | `/usr/share/nginx/html` | Static website |
+| `./conf/default.conf` | `/etc/nginx/conf.d/default.conf` | Virtual-host configuration |
+| `./certbot` | `/var/www/certbot` | ACME challenge files |
+| `/etc/letsencrypt` | `/etc/letsencrypt` | TLS certificates |
 
 All four mounts are read-only inside the container.
 
-Nginx can read the required files but cannot modify the host copies.
+The repository tracks `conf/default.conf.example`, while the deployed Compose configuration expects `conf/default.conf`.
 
-## Preparing the Configuration File
-
-The repository tracks the sanitized Nginx configuration as:
-
-```text
-conf/default.conf.example
-```
-
-The Compose file expects:
-
-```text
-conf/default.conf
-```
-
-Before deployment, create the local configuration copy:
+For a new deployment, copy and review the example:
 
 ```bash
 cp conf/default.conf.example conf/default.conf
-```
-
-Review the copied file and update hostnames, certificate paths, or upstream addresses if deploying it in another environment.
-
-The local `conf/default.conf` file should remain outside Git.
-
-## Public Hostnames
-
-The production configuration handles:
-
-```text
-voidwar.net
-www.voidwar.net
-grafana.voidwar.net
-```
-
-The verified production certificate includes all three names as subject alternative names.
-
-## HTTP Behavior
-
-### Primary Domain
-
-Requests to:
-
-```text
-http://voidwar.net
-```
-
-are redirected to:
-
-```text
-https://voidwar.net
-```
-
-The original request URI is preserved.
-
-### WWW Domain
-
-Requests to either:
-
-```text
-http://www.voidwar.net
-https://www.voidwar.net
-```
-
-are redirected to the canonical hostname:
-
-```text
-https://voidwar.net
-```
-
-The original request URI is preserved.
-
-### Grafana Domain
-
-Requests to:
-
-```text
-http://grafana.voidwar.net
-```
-
-are redirected to:
-
-```text
-https://grafana.voidwar.net
-```
-
-## Static Website
-
-The primary HTTPS virtual host serves the static website from:
-
-```text
-/usr/share/nginx/html
-```
-
-The repository includes:
-
-```text
-html/index.html
-```
-
-The current page confirms that the Nginx container is operating successfully.
-
-The location block uses:
-
-```nginx
-try_files $uri $uri/ =404;
-```
-
-Nginx serves an existing file or directory and otherwise returns HTTP 404.
-
-## TLS Certificate Paths
-
-The Nginx configuration references:
-
-```text
-/etc/letsencrypt/live/voidwar.net/fullchain.pem
-/etc/letsencrypt/live/voidwar.net/privkey.pem
-```
-
-The certificate contains:
-
-```text
-voidwar.net
-www.voidwar.net
-grafana.voidwar.net
-```
-
-The repository contains only references to these paths.
-
-It does not contain the certificate files or private key.
-
-## Certificate Requirement
-
-The referenced certificate files must exist on the host before Nginx starts with the full HTTPS configuration.
-
-If the files do not exist, Nginx configuration validation and container startup will fail.
-
-Certificate issuance can be bootstrapped using an ACME client and either:
-
-- A temporary HTTP-only Nginx configuration
-- An ACME standalone listener
-- Another controlled certificate-issuance process
-
-The exact certificate issuance and renewal scheduler used by the production host is not defined by this repository and should be documented separately if automated.
-
-After certificate issuance, confirm that the files exist:
-
-```bash
-sudo ls -l /etc/letsencrypt/live/voidwar.net/
-```
-
-Never display or copy the contents of:
-
-```text
-privkey.pem
-```
-
-## Certificate Inspection
-
-Certificate metadata can be inspected safely with:
-
-```bash
-sudo openssl x509 \
-  -in /etc/letsencrypt/live/voidwar.net/fullchain.pem \
-  -noout \
-  -subject \
-  -issuer \
-  -dates \
-  -ext subjectAltName
-```
-
-This displays:
-
-- Certificate subject
-- Issuing certificate authority
-- Validity period
-- Subject alternative names
-
-It does not display the private key.
-
-## ACME HTTP Challenge
-
-The HTTP virtual hosts expose:
-
-```text
-/.well-known/acme-challenge/
-```
-
-Challenge files are served from:
-
-```text
-/var/www/certbot
-```
-
-The corresponding host directory is:
-
-```text
-./certbot
-```
-
-Create it before deployment:
-
-```bash
 mkdir -p certbot
 ```
 
-ACME challenge files are generated runtime content and are excluded from Git.
+The local configuration file is excluded from Git.
 
-## TLS Protocols
+**Important:** The production container already runs from `/opt/voidwar/nginx`. Do not start a second copy from the Git repository on the same host, as it would conflict with the existing container and HTTP/HTTPS listeners.
 
-The primary and `www` HTTPS virtual hosts explicitly allow:
+## HTTP and HTTPS Routing
 
-```nginx
-ssl_protocols TLSv1.2 TLSv1.3;
-```
+| Request | Behavior |
+|---|---|
+| `http://voidwar.net` | Redirect to HTTPS |
+| `https://voidwar.net` | Serve static landing page |
+| `http://www.voidwar.net` | Redirect to canonical HTTPS hostname |
+| `https://www.voidwar.net` | Redirect to `https://voidwar.net` |
+| `http://grafana.voidwar.net` | Redirect to HTTPS |
+| `https://grafana.voidwar.net` | Reverse proxy to Grafana |
 
-This disables obsolete TLS protocol versions for those virtual hosts.
+Redirects preserve the original request URI.
 
-TLS configuration should be revalidated after Nginx image upgrades or material configuration changes.
+The static website is served from `/usr/share/nginx/html`, with its source tracked at `docker/nginx/html/index.html`.
 
 ## Grafana Reverse Proxy
 
-Requests to:
-
-```text
-https://grafana.voidwar.net
-```
-
-are forwarded to:
-
-```text
-http://127.0.0.1:3000
-```
-
-The relevant directive is:
+Nginx forwards requests for `grafana.voidwar.net` to the local Grafana listener:
 
 ```nginx
 proxy_pass http://127.0.0.1:3000;
 ```
 
-Grafana must therefore:
+Grafana listens on the host's loopback interface rather than a public interface.
 
-- Be running on the same host
-- Listen on `127.0.0.1`
-- Use port 3000
-
-Grafana does not need to listen on a public interface.
-
-## Forwarded Headers
-
-Nginx forwards the original request context through:
+The proxy forwards the original request context:
 
 ```nginx
 proxy_set_header Host $host;
@@ -376,490 +109,225 @@ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
 ```
 
-These headers provide Grafana with:
+HTTP/1.1 and connection upgrade headers are also configured for Grafana functionality that requires upgraded connections.
 
-- The original hostname
-- The connecting client address
-- The forwarded client-address chain
-- The original request protocol
-
-The Grafana root URL is configured separately as:
+Grafana's configured public root URL is:
 
 ```text
 https://grafana.voidwar.net
 ```
 
-## HTTP Upgrade Support
+## TLS Certificates
 
-The Grafana proxy uses HTTP/1.1 and forwards upgrade headers:
+Let's Encrypt provides the certificate used by Nginx.
 
-```nginx
-proxy_http_version 1.1;
-proxy_set_header Upgrade $http_upgrade;
-proxy_set_header Connection "upgrade";
-```
+The certificate covers:
 
-This supports Grafana functionality that may require upgraded connections.
+- `voidwar.net`
+- `www.voidwar.net`
+- `grafana.voidwar.net`
 
-## Fresh Deployment
-
-Move into the Nginx directory:
-
-```bash
-cd docker/nginx
-```
-
-Create the local Nginx configuration:
-
-```bash
-cp conf/default.conf.example conf/default.conf
-```
-
-Create the ACME challenge directory:
-
-```bash
-mkdir -p certbot
-```
-
-Confirm the required certificate files already exist:
-
-```bash
-sudo test -r /etc/letsencrypt/live/voidwar.net/fullchain.pem
-sudo test -r /etc/letsencrypt/live/voidwar.net/privkey.pem
-```
-
-Validate the Compose configuration:
-
-```bash
-docker compose config
-```
-
-Start the container:
-
-```bash
-docker compose up -d
-```
-
-The repository copy should not be started on the production host while the live container is already running from `/opt/voidwar/nginx`.
-
-Doing so would create a container-name conflict and compete for ports 80 and 443.
-
-## Container Status
-
-Check the Compose service:
-
-```bash
-docker compose ps
-```
-
-Or inspect the named container:
-
-```bash
-docker ps --filter name=voidwar-nginx
-```
-
-The expected container name is:
+Nginx reads the certificate and private key from:
 
 ```text
-voidwar-nginx
+/etc/letsencrypt/live/voidwar.net/fullchain.pem
+/etc/letsencrypt/live/voidwar.net/privkey.pem
 ```
 
-## Validate the Compose File
+The HTTPS configuration supports TLS 1.2 and TLS 1.3.
 
-Render and validate the Compose configuration:
+Certificate files must exist before starting Nginx with the full HTTPS configuration. Initial issuance may require a temporary HTTP-only configuration or another controlled ACME bootstrap method.
+
+Certificate files and private keys are never committed to the repository.
+
+### Inspect Certificates
 
 ```bash
-docker compose config
+sudo certbot certificates
 ```
 
-This detects Compose syntax and path interpolation issues.
-
-It does not fully validate Nginx configuration syntax.
-
-## Validate Nginx Configuration
-
-Validate the running container configuration:
+Inspect the certificate metadata directly:
 
 ```bash
-docker exec voidwar-nginx nginx -t
+sudo openssl x509 \
+  -in /etc/letsencrypt/live/voidwar.net/fullchain.pem \
+  -noout -dates -ext subjectAltName
 ```
-
-Expected output includes:
-
-```text
-syntax is ok
-test is successful
-```
-
-Configuration changes should not be applied unless this test passes.
-
-## Verify Listening Ports
-
-Check ports 80 and 443:
-
-```bash
-sudo ss -lntp | grep -E ':(80|443)\b'
-```
-
-Nginx should listen publicly on both ports.
-
-Because host networking is used, the listener appears directly on the host rather than through a Docker port-forwarding process.
-
-## Verify Public Endpoints
-
-Check the primary HTTP redirect:
-
-```bash
-curl -I http://voidwar.net
-```
-
-Expected destination:
-
-```text
-https://voidwar.net/
-```
-
-Check the primary HTTPS site:
-
-```bash
-curl -I https://voidwar.net
-```
-
-Expected status:
-
-```text
-200 OK
-```
-
-Check the `www` redirects:
-
-```bash
-curl -I http://www.voidwar.net
-curl -I https://www.voidwar.net
-```
-
-Expected destination:
-
-```text
-https://voidwar.net/
-```
-
-Check the Grafana HTTP redirect:
-
-```bash
-curl -I http://grafana.voidwar.net
-```
-
-Expected destination:
-
-```text
-https://grafana.voidwar.net/
-```
-
-Check the Grafana HTTPS endpoint:
-
-```bash
-curl -I https://grafana.voidwar.net
-```
-
-An unauthenticated request normally returns a redirect to:
-
-```text
-/login
-```
-
-## Applying Configuration Changes
-
-Edit the host-side Nginx configuration, then validate it inside the running container:
-
-```bash
-docker exec voidwar-nginx nginx -t
-```
-
-If validation succeeds, reload Nginx:
-
-```bash
-docker exec voidwar-nginx nginx -s reload
-```
-
-Alternatively, recreate the container:
-
-```bash
-docker compose up -d nginx
-```
-
-A reload is generally preferable for a configuration-only change because it avoids unnecessarily replacing the container.
 
 ## Automated Certificate Renewal
 
-Let's Encrypt certificate renewal is fully automated through the host's Certbot systemd timer.
+Certificate renewal is managed by the host's `certbot.timer` systemd unit.
 
-The timer runs Certbot twice daily and is enabled by default:
-
-```bash
-systemctl status certbot.timer
-```
-
-The active timer triggers:
-
-```text
-certbot.service
-```
-
-Certificate renewal uses the webroot method with:
+Certbot uses the webroot challenge method with:
 
 ```text
 /opt/voidwar/nginx/certbot
 ```
 
-as the ACME challenge directory.
-
-The managed certificate currently covers:
+Nginx serves HTTP challenge files through:
 
 ```text
-voidwar.net
-www.voidwar.net
-grafana.voidwar.net
+/.well-known/acme-challenge/
 ```
 
-Renewal can be safely tested without modifying the live certificate:
+### Renewal Deployment Hook
 
-```bash
-sudo certbot renew --dry-run
-```
-
-A successful dry run confirms that the current certificate can be renewed using the configured challenge method.
-
-## Automatic Nginx Reload
-
-After a successful certificate renewal, Certbot executes a deploy hook that validates and reloads the running Nginx container.
-
-The deploy hook is located at:
+After successful certificate renewal, Certbot executes:
 
 ```text
 /etc/letsencrypt/renewal-hooks/deploy/reload-voidwar-nginx.sh
 ```
 
-The hook executes:
+The hook validates the running Nginx configuration before reloading it:
 
 ```bash
 /usr/bin/docker exec voidwar-nginx nginx -t
 /usr/bin/docker exec voidwar-nginx nginx -s reload
 ```
 
-The first command validates the Nginx configuration.
+This allows Nginx to begin serving the renewed certificate without replacing the container.
 
-If validation succeeds, the second command performs a graceful reload so the renewed certificate is used immediately without restarting the container.
-
-The deploy hook only runs after a successful certificate renewal.
-
-## Renewal Verification
-
-Check the Certbot timer:
+### Verify Renewal Configuration
 
 ```bash
-systemctl list-timers --all | grep -i certbot
-```
-
-Inspect the managed certificate:
-
-```bash
-sudo certbot certificates
-```
-
-Perform a simulated renewal:
-
-```bash
+sudo systemctl status certbot.timer --no-pager
+sudo systemctl list-timers --all | grep certbot
 sudo certbot renew --dry-run
 ```
 
-Inspect the deploy hook:
+A successful dry run tests the renewal process without replacing the live certificate. It does not, by default, exercise the deployment hook.
+
+The deployment hook should be checked separately when modified.
+
+## Routine Operations
+
+Run production Compose commands from the live deployment directory:
 
 ```bash
-sudo sed -n '1,120p' \
-  /etc/letsencrypt/renewal-hooks/deploy/reload-voidwar-nginx.sh
+cd /opt/voidwar/nginx
 ```
 
-Verify the active certificate validity period:
+Check container status and logs:
 
 ```bash
-sudo openssl x509 \
-  -in /etc/letsencrypt/live/voidwar.net/fullchain.pem \
-  -noout \
-  -dates
+sudo docker compose ps
+sudo docker logs --tail 100 voidwar-nginx
 ```
 
-## View Logs
-
-View recent Nginx logs:
+Validate the Compose and Nginx configurations:
 
 ```bash
-docker logs --tail 100 voidwar-nginx
+sudo docker compose config -q
+sudo docker exec voidwar-nginx nginx -t
 ```
 
-Follow logs in real time:
+Reload Nginx after a successful configuration test:
 
 ```bash
-docker logs -f voidwar-nginx
+sudo docker exec voidwar-nginx nginx -s reload
 ```
 
-Container logs may include ordinary automated internet scanning and requests for unrelated application paths.
+For configuration-only changes, a graceful reload is generally preferable to recreating the container.
 
-Unexpected requests do not by themselves indicate compromise.
+## Endpoint Validation
 
-## Troubleshooting Container Startup
-
-If the container fails to start, inspect:
+Verify HTTP redirects and HTTPS responses:
 
 ```bash
-docker compose ps
-docker logs --tail 100 voidwar-nginx
-docker compose config
+curl -I http://voidwar.net
+curl -I https://voidwar.net
+
+curl -I http://www.voidwar.net
+curl -I https://www.voidwar.net
+
+curl -I http://grafana.voidwar.net
+curl -I https://grafana.voidwar.net
 ```
 
-Common causes include:
+Expected behavior:
 
-- Missing certificate files
-- An invalid Nginx directive
-- A missing bind-mounted file
-- Another process already using port 80 or 443
-- Incorrect file permissions
-- An invalid certificate path
+- HTTP requests redirect to HTTPS.
+- The primary HTTPS website returns `200 OK`.
+- The `www` hostname redirects to the canonical hostname.
+- Grafana is reachable through HTTPS and normally redirects unauthenticated requests to `/login`.
 
-Check port conflicts:
+Check public listening ports:
 
 ```bash
 sudo ss -lntp | grep -E ':(80|443)\b'
 ```
 
-## Troubleshooting TLS
+The repository also includes `scripts/verify_infrastructure.sh`, which automates several endpoint, container, TLS, and service-health checks.
 
-Inspect the certificate:
+## Troubleshooting
+
+### Nginx Fails to Start
+
+Check the container logs, Compose configuration, and host listeners:
 
 ```bash
-sudo openssl x509 \
-  -in /etc/letsencrypt/live/voidwar.net/fullchain.pem \
-  -noout \
-  -dates \
-  -ext subjectAltName
+sudo docker logs --tail 100 voidwar-nginx
+sudo docker compose config -q
+sudo ss -lntp | grep -E ':(80|443)\b'
 ```
+
+Common causes include missing certificate files, invalid Nginx directives, incorrect bind mounts, file permissions, or port conflicts.
+
+### HTTPS or Certificate Errors
 
 Verify:
 
-- The certificate has not expired
-- The requested hostname is included
-- Nginx can read the certificate files
-- DNS resolves to the correct server
-- Port 443 is reachable
-- Nginx configuration passes validation
+- Certificate expiration and subject alternative names
+- DNS resolution for the requested hostname
+- Port 443 accessibility
+- Nginx configuration validity
+- Certbot renewal status
 
-Check the public TLS endpoint:
+Inspect the public endpoint:
 
 ```bash
 curl -Iv https://voidwar.net
 ```
 
-## Troubleshooting Grafana Proxying
+### Grafana Proxy Errors
 
-First test Grafana locally:
+Test the upstream locally:
 
 ```bash
 curl -I http://127.0.0.1:3000
 ```
 
-If Grafana does not respond locally, troubleshoot the Grafana container before Nginx.
+If Grafana does not respond locally, investigate the Grafana container first.
 
-If Grafana responds locally but fails publicly, inspect:
+If Grafana responds locally but not through HTTPS, check the Nginx proxy configuration, certificate coverage, DNS, and Nginx logs.
 
-- The `grafana.voidwar.net` server block
-- The `proxy_pass` target
-- Nginx logs
-- DNS
-- TLS certificate coverage
-- Grafana root URL settings
-- Firewall rules
+### ACME Renewal Failures
 
-Validate Nginx:
+Check:
 
-```bash
-docker exec voidwar-nginx nginx -t
-```
+- `certbot.timer` and Certbot logs
+- The configured webroot directory
+- HTTP accessibility of the ACME challenge path
+- Firewall and DNS settings
+- Deployment-hook permissions and behavior
 
-Check both containers:
+Test renewal with:
 
 ```bash
-docker ps \
-  --filter name=voidwar-nginx \
-  --filter name=voidwar-grafana
+sudo certbot renew --dry-run
 ```
 
-## Troubleshooting ACME Challenges
+## Related Documentation
 
-Confirm the host challenge directory exists:
-
-```bash
-ls -ld certbot
-```
-
-Confirm the challenge path is present in the HTTP virtual host:
-
-```text
-/.well-known/acme-challenge/
-```
-
-A temporary test file can be created under the challenge directory and requested over HTTP.
-
-Remove the test file immediately afterward.
-
-Do not place private keys, account credentials, or unrelated files in the challenge directory.
-
-## Runtime and Secret Exclusions
-
-The Nginx-specific ignore rules exclude:
-
-```text
-certbot/
-.well-known/
-letsencrypt/
-*.key
-*.pem
-*.crt
-```
-
-The following must never be committed:
-
-- `/etc/letsencrypt`
-- Private keys
-- Live certificates
-- Certbot account credentials
-- ACME challenge runtime files
-- Real environment files
-- Logs containing sensitive information
-
-The repository contains only sanitized configuration and static content.
-
-## Operational Checklist
-
-After deployment or maintenance, verify:
-
-- [ ] The Nginx container is running
-- [ ] `docker compose config` succeeds
-- [ ] `nginx -t` succeeds
-- [ ] Nginx listens on ports 80 and 443
-- [ ] HTTP redirects to HTTPS
-- [ ] `www.voidwar.net` redirects to `voidwar.net`
-- [ ] `https://voidwar.net` returns the static site
-- [ ] `https://grafana.voidwar.net` reaches Grafana
-- [ ] The certificate covers all three hostnames
-- [ ] The certificate is not near expiration
-- [ ] Grafana remains bound to `127.0.0.1:3000`
-- [ ] No certificate or private-key files are staged in Git
-- [ ] No ACME challenge runtime files are staged in Git
+- [Architecture](architecture.md)
+- [Monitoring Stack](monitoring-stack.md)
+- [Security Hardening](security-hardening.md)
+- [Maintenance Runbook](maintenance-runbook.md)
 
 ## Summary
 
-The VoidWar Nginx deployment provides the public HTTP and HTTPS entry point for the infrastructure.
+VoidWar uses a Dockerized Nginx reverse proxy to provide HTTPS for its public website and Grafana monitoring interface.
 
-Nginx serves the primary static site, redirects the `www` hostname, terminates TLS using Let's Encrypt certificate files mounted read-only from the host, serves ACME HTTP challenge files, and reverse-proxies the Grafana hostname to a loopback-only Grafana service.
+The deployment combines host networking, read-only configuration and certificate mounts, automated Let's Encrypt renewal, configuration validation, and graceful reloads.
 
-The repository contains the sanitized Compose file, Nginx configuration example, and static site while excluding certificates, private keys, and runtime data.
+Production secrets and runtime files remain outside the public Git repository.
