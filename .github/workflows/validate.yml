@@ -1,0 +1,69 @@
+
+name: Infrastructure Validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: Bash - ShellCheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Validate Bash scripts
+        run: shellcheck --severity=warning scripts/*.sh
+
+  terraform:
+    name: Terraform - Format and Validate
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform/aws/environments/dev
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.5"
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive ../../
+
+      - name: Initialize Terraform
+        run: terraform init -backend=false -input=false
+
+      - name: Validate Terraform configuration
+        run: terraform validate -no-color
+
+  docker-compose:
+    name: Docker Compose - Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate Nginx Compose
+        run: docker compose -f docker/nginx/compose.yaml config -q
+
+      - name: Validate monitoring Compose
+        env:
+          GRAFANA_ADMIN_USER: admin
+          GRAFANA_ADMIN_PASSWORD: ci-placeholder-not-a-real-secret
+        run: docker compose -f docker/monitoring/compose.yaml config -q
