@@ -1,6 +1,8 @@
 
 # VoidWar Infrastructure
 
+[![Infrastructure Validation](https://github.com/Kyle-Berry/voidwar-infrastructure/actions/workflows/validate.yml/badge.svg)](https://github.com/Kyle-Berry/voidwar-infrastructure/actions/workflows/validate.yml)
+
 My interest in Linux infrastructure began at 13, when I rented my first OVHcloud Kimsufi bare-metal server to host a multiplayer environment for friends. I learned through experimentation, broken configurations, and countless hours figuring out how remote systems worked. That fascination stayed with me and eventually led me to pursue a degree in Computer Science and earn the Red Hat Certified System Administrator (RHCSA) certification.
 
 **VoidWar is the current culmination of that long-running interest:** a persistent, remotely administered Linux environment incorporating security hardening, infrastructure automation, containerized services, observability, and offsite cloud backups.
@@ -19,6 +21,7 @@ This repository documents the infrastructure I operate, the engineering decision
 | **Local recovery** | Automated compressed backups with Grandfather-Father-Son retention |
 | **Offsite recovery** | Private Amazon S3 storage, IAM least privilege, lifecycle policies |
 | **Infrastructure as code** | Terraform provisioning for AWS backup resources |
+| **CI** | GitHub Actions automated validation for Bash, Terraform, and Docker Compose |
 
 ## Architecture
 
@@ -74,7 +77,13 @@ Terraform configuration under [`terraform/aws/`](terraform/aws/) manages the AWS
 
 Provisioning is performed from an administrative workstation using AWS SSO credentials. The dedicated server uses a narrowly scoped uploader identity rather than broad administrative credentials.
 
+See [AWS and Terraform Infrastructure](docs/aws-terraform-infrastructure.md) for the S3 configuration, IAM permissions, lifecycle policies, and provisioning workflow.
+
+
 ## Validation and Maintenance
+
+GitHub Actions runs automated CI checks on pushes and pull requests, including ShellCheck linting for Bash scripts, Terraform formatting and configuration validation, and Docker Compose configuration validation. The workflow does not deploy changes or access production credentials.
+
 
 Operational checks documented for this environment include:
 
@@ -90,6 +99,10 @@ Maintenance procedures and troubleshooting steps are documented in [`docs/mainte
 
 ```text
 .
+├── .github/
+│   └── workflows/
+│       └── validate.yml            # GitHub Actions CI
+├── .gitignore
 ├── config/                         # Sanitized security configuration
 │   ├── fail2ban/
 │   ├── ssh/
@@ -102,6 +115,7 @@ Maintenance procedures and troubleshooting steps are documented in [`docs/mainte
 │   └── nginx/                      # HTTPS reverse proxy and static site
 ├── docs/                           # Architecture and operational documentation
 │   ├── architecture.md
+│   ├── aws-terraform-infrastructure.md
 │   ├── backup-workflow.md
 │   ├── maintenance-runbook.md
 │   ├── monitoring-stack.md
@@ -119,7 +133,6 @@ Maintenance procedures and troubleshooting steps are documented in [`docs/mainte
 │       └── modules/
 │           ├── iam-backup-uploader/ # Least-privilege IAM resources
 │           └── s3-backups/         # S3 bucket and lifecycle configuration
-├── .gitignore
 └── README.md
 ```
 
@@ -130,6 +143,7 @@ Maintenance procedures and troubleshooting steps are documented in [`docs/mainte
 | [Architecture](docs/architecture.md) | Components, trust boundaries, data flows, and design decisions |
 | [Backup Workflow](docs/backup-workflow.md) | Backup execution, retention, and offsite synchronization |
 | [Restore Procedure](docs/restore-procedure.md) | Recovery steps and verification |
+| [AWS and Terraform Infrastructure](docs/aws-terraform-infrastructure.md) | S3 backup storage, IAM permissions, lifecycle policies, and Terraform provisioning |
 | [Security Hardening](docs/security-hardening.md) | SSH, firewall, Fail2Ban, and access controls |
 | [Monitoring Stack](docs/monitoring-stack.md) | Prometheus, Node Exporter, and Grafana |
 | [Nginx and TLS Deployment](docs/nginx-tls-deployment.md) | HTTPS, reverse proxying, and certificate renewal |
@@ -157,7 +171,7 @@ VoidWar is an ongoing infrastructure engineering project. Future development wil
 ### Security and Infrastructure Automation
 
 - Develop a controlled, automated security-update workflow with appropriate validation and rollback procedures.
-- Introduce CI/CD checks for repository configuration, shell scripts, and Terraform code.
+- Expand GitHub Actions CI coverage with additional automated configuration and infrastructure checks as needed.
 - Expand infrastructure validation to detect configuration drift and common operational failures.
 - Continue refining least-privilege access, credential management, and operational security practices.
 
