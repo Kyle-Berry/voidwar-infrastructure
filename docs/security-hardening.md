@@ -1,164 +1,215 @@
+
 # Security Hardening
 
-This document summarizes the baseline security hardening used for the VoidWar infrastructure environment.
+This document describes the security controls used to protect the VoidWar infrastructure environment, hosted on an OVHcloud bare-metal server running Ubuntu Server 22.04 LTS.
 
-The goal of this setup is to reduce unnecessary exposure on a public Linux server while keeping required administration and game server services available.
+The approach emphasizes restricted administrative access, minimal public service exposure, defense in depth, and repeatable verification.
 
-## Overview
+## Security Overview
 
-The server uses a layered security approach:
+The environment implements:
 
-- SSH hardening for remote administration
-- UFW firewall rules for inbound traffic control
-- Fail2Ban for SSH brute-force protection
-- Minimal public service exposure
-- Non-root administrative access
+- Ed25519 SSH key authentication with root and password login disabled
+- UFW default-deny inbound firewall rules
+- Fail2Ban protection for SSH authentication
+- Non-root administration with `sudo` for privileged operations
+- HTTPS for public web services
+- Localhost-only monitoring listeners
+- Least-privilege AWS IAM access for offsite backups
+- Sanitized infrastructure configuration in the public repository
 
-The example configuration files are stored under:
-
-```text
-config/
-  ssh/
-    sshd_config.example
-
-  ufw/
-    ufw-rules.example
-
-  fail2ban/
-    custom_hardening.local.example
-```
-
-These files are sanitized examples. They do not expose production ports, private IP addresses, credentials, or machine-specific details.
+Example configurations are maintained under `config/ssh/`, `config/ufw/`, and `config/fail2ban/`.
 
 ## SSH Hardening
 
-SSH is used for remote server administration.
+SSH provides remote administration through a dedicated non-root account using Ed25519 public-key authentication.
 
-The SSH configuration disables direct root login and password-based authentication. Administrative access uses SSH key authentication through a non-root user account.
+The SSH configuration includes:
 
-Key SSH hardening decisions include:
+- `PermitRootLogin no`
+- `PasswordAuthentication no`
+- `KbdInteractiveAuthentication no`
+- Public-key authentication enabled
+- Unnecessary forwarding features restricted where appropriate
 
-- Root login disabled
-- Password authentication disabled
-- Keyboard-interactive authentication disabled
-- SSH key authentication used for remote access
-- X11 forwarding disabled in the public example
-- SFTP subsystem enabled for controlled file transfer
-- Default cloud image users can be denied after creating a dedicated admin account
+The SSH configuration example is located at:
 
-Disabling password login significantly reduces the risk of successful brute-force attacks because attackers cannot authenticate using guessed passwords.
+`config/ssh/sshd_config.example`
 
-The sanitized example is located at:
-
-```text
-config/ssh/sshd_config.example
-```
-
-## UFW Firewall Rules
-
-UFW is used to control inbound network access.
-
-The firewall uses a default-deny inbound policy and only allows required services.
-
-Baseline firewall posture:
-
-- Deny incoming traffic by default
-- Allow outgoing traffic by default
-- Deny routed traffic by default
-- Enable low-volume logging
-- Limit SSH connection attempts
-- Allow required Minecraft server traffic
-
-The public example uses standard placeholder ports instead of production-specific ports.
-
-The sanitized example is located at:
-
-```text
-config/ufw/ufw-rules.example
-```
-
-## Fail2Ban SSH Protection
-
-Fail2Ban is used to monitor SSH authentication activity and temporarily ban repeated failed login attempts.
-
-The active jail configuration is managed through a custom drop-in file under:
-
-```text
-/etc/fail2ban/jail.d/
-```
-
-The example configuration enables the `sshd` jail and applies stricter default thresholds:
-
-- 1 hour ban time
-- 15 minute detection window
-- 3 maximum retries
-- Loopback addresses whitelisted
-- SSH authentication events read from the systemd journal
-- Production-specific SSH port omitted from the public example
-
-This provides an additional layer of protection against repeated SSH login attempts.
-
-The sanitized example is located at:
-
-```text
-config/fail2ban/custom_hardening.local.example
-```
-
-## Service Exposure
-
-Only required services should be reachable from the public internet.
-
-The intended exposure model is:
-
-- SSH for administration
-- Minecraft server traffic for players
-- Future HTTP/HTTPS only if nginx or web services are deployed
-
-Unused services should remain closed at the firewall level.
-
-This reduces the attack surface of the server and makes the exposed services easier to monitor and manage.
-
-## Production Port Sanitization
-
-Production-specific ports are intentionally not published in this repository.
-
-The example configuration files use generic or standard ports where appropriate. This keeps the repository useful for documentation and review without exposing exact operational details.
-
-## Operational Notes
-
-Security changes should be tested carefully before applying them to a remote server.
-
-SSH changes are especially risky because an invalid configuration or overly restrictive rule can lock out remote administration access.
-
-Recommended safety practices:
-
-- Keep an existing SSH session open while testing SSH changes
-- Validate SSH configuration before restarting the service
-- Confirm firewall rules before enabling or reloading UFW
-- Restart and check Fail2Ban after modifying jail files
-- Review logs after security changes
-
-Useful validation commands include:
+### Validation
 
 ```bash
+sudo sshd -t
 sudo sshd -T
 sudo systemctl status ssh --no-pager
-sudo ufw status verbose
-sudo systemctl status fail2ban --no-pager
-sudo fail2ban-client status
-sudo fail2ban-client status sshd
 ```
+
+Before changing SSH configuration, keep an existing session open and verify that a second session can authenticate successfully.
+
+A nonstandard SSH port may reduce automated scanning noise but is not treated as a substitute for authentication controls.
+
+## UFW Firewall
+
+UFW restricts inbound traffic using a default-deny policy.
+
+The baseline configuration:
+
+- Denies incoming traffic by default
+- Allows outgoing traffic by default
+- Denies routed traffic by default
+- Limits SSH connection attempts
+- Permits required Minecraft, HTTP, and HTTPS traffic
+- Enables low-volume firewall logging
+
+The public configuration example is located at:
+
+`config/ufw/ufw-rules.example`
+
+### Validation
+
+```bash
+sudo ufw status verbose
+sudo ufw status numbered
+sudo ss -tulpn
+```
+
+Firewall rules and service listening addresses must be reviewed together to identify unintended exposure.
+
+## Fail2Ban
+
+Fail2Ban monitors SSH authentication failures and temporarily bans sources that exceed configured thresholds.
+
+The `sshd` jail uses:
+
+| Setting | Configuration |
+|---|---|
+| Ban duration | 1 hour |
+| Detection window | 15 minutes |
+| Maximum retries | 3 |
+| Log source | systemd journal |
+| Exclusions | Loopback addresses |
+
+The active configuration is managed under `/etc/fail2ban/jail.d/`.
+
+The sanitized example is available at:
+
+`config/fail2ban/custom_hardening.local.example`
+
+### Validation
+
+```bash
+sudo systemctl status fail2ban --no-pager
+sudo fail2ban-client status sshd
+sudo journalctl -u fail2ban -n 50 --no-pager
+```
+
+Fail2Ban supplements SSH authentication and firewall controls rather than replacing them.
+
+## Service Exposure and Docker Networking
+
+VoidWar exposes only the services needed for remote administration, Minecraft connectivity, and public web access.
+
+| Service | Intended exposure |
+|---|---|
+| SSH | Public, restricted by authentication and firewall controls |
+| Minecraft | Public game traffic |
+| Nginx HTTP/HTTPS | Public website and Grafana reverse proxy |
+| Grafana | `127.0.0.1:3000`, accessed externally through Nginx |
+| Prometheus | `127.0.0.1:9090` |
+| Node Exporter | `127.0.0.1:9100` |
+
+The Nginx and monitoring containers use Docker host networking. Because these containers share the host network namespace, explicitly binding internal services to loopback addresses is important.
+
+### Validation
+
+```bash
+sudo docker ps
+sudo ss -tulpn
+```
+
+Monitoring ports should not be directly reachable from the public internet.
+
+## HTTPS and Certificate Management
+
+Nginx provides HTTPS for `voidwar.net`, `www.voidwar.net`, and `grafana.voidwar.net`.
+
+Let's Encrypt certificates are managed through Certbot. A systemd timer handles renewal, and a deployment hook validates and reloads Nginx after successful renewal.
+
+### Validation
+
+```bash
+sudo systemctl status certbot.timer --no-pager
+sudo certbot certificates
+```
+
+See [Nginx and TLS Deployment](nginx-tls-deployment.md) for configuration and renewal procedures.
+
+## AWS Backup Security
+
+Offsite backups are stored in a private AWS S3 bucket provisioned through Terraform.
+
+The backup infrastructure uses:
+
+- S3 Block Public Access
+- Server-side encryption with SSE-S3
+- Bucket versioning
+- Lifecycle expiration policies
+- A dedicated IAM uploader identity
+- IAM permissions scoped to required bucket listing and object uploads
+
+The uploader does not require S3 object retrieval or deletion permissions.
+
+AWS is used for backup storage; the production workload remains on the OVHcloud host.
+
+See [Backup Workflow](backup-workflow.md) and [Restore Procedure](restore-procedure.md).
+
+## Repository and Credential Hygiene
+
+The public repository contains sanitized configuration examples and infrastructure code, not live credentials or runtime data.
+
+Sensitive materials excluded from version control include:
+
+- SSH private keys and AWS credentials
+- Terraform state files
+- Application secrets and environment files
+- Backup archives and server runtime data
+
+Production-specific ports are omitted from selected public examples. Port secrecy is not considered a primary security control.
+
+## Infrastructure Verification
+
+The repository includes `scripts/verify_infrastructure.sh`, which checks several operational and security-relevant conditions:
+
+- Required Docker containers and service health
+- Local-only monitoring listeners
+- HTTP redirects and HTTPS endpoint behavior
+- TLS certificate expiration and renewal configuration
+- Fail2Ban SSH jail status
+
+Run from the repository root:
+
+```bash
+cd ~/voidwar-infrastructure
+bash scripts/verify_infrastructure.sh
+```
+
+This is an infrastructure health check, not a comprehensive security audit. SSH policy, UFW rules, OS updates, and AWS permissions still require separate review.
+
+## Operational Precautions
+
+Before applying security-related changes:
+
+1. Keep an active SSH session open when modifying remote access or firewall rules.
+2. Validate configurations before restarting or reloading services.
+3. Confirm required ports remain accessible.
+4. Review service status and logs after changes.
+5. Verify public endpoints and internal listener bindings.
+6. Maintain recoverable backups before significant changes.
+
+For routine maintenance and troubleshooting, see [Maintenance Runbook](maintenance-runbook.md).
 
 ## Summary
 
-The VoidWar server uses basic but important Linux security controls:
+VoidWar uses layered Linux and cloud security controls to reduce unnecessary exposure while maintaining required services.
 
-- Hardened SSH access
-- Key-based authentication
-- Disabled root/password login
-- Default-deny firewall posture
-- Limited inbound services
-- Fail2Ban SSH brute-force protection
-- Sanitized public documentation
-
-This setup demonstrates practical Linux server hardening for a public-facing infrastructure environment.
+The security baseline combines hardened SSH access, UFW, Fail2Ban, restricted monitoring endpoints, HTTPS, least-privilege AWS IAM, and repeatable infrastructure checks.
