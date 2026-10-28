@@ -119,24 +119,33 @@ upload_gfs_backups() {
 # Synchronize all currently retained local GFS backups to S3.
 sync_all_backups() {
     local failed=0
+    local files_seen=0
     local source_file
 
     echo "[*] Synchronizing retained GFS backups to S3..."
 
     for source_file in "$DAILY_DIR"/mcserver-*.tar.gz; do
         [ -f "$source_file" ] || continue
+        ((files_seen += 1))
         upload_backup "$source_file" "$S3_DAILY_PREFIX" || failed=1
     done
 
     for source_file in "$WEEKLY_DIR"/mcserver-*.tar.gz; do
         [ -f "$source_file" ] || continue
+        ((files_seen += 1))
         upload_backup "$source_file" "$S3_WEEKLY_PREFIX" || failed=1
     done
 
     for source_file in "$MONTHLY_DIR"/mcserver-*.tar.gz; do
         [ -f "$source_file" ] || continue
+        ((files_seen += 1))
         upload_backup "$source_file" "$S3_MONTHLY_PREFIX" || failed=1
     done
+
+    if [ "$files_seen" -eq 0 ]; then
+        echo "[-] Error: no local GFS backup archives found to synchronize." >&2
+        return 1
+    fi
 
     if [ "$failed" -ne 0 ]; then
         echo "[-] One or more S3 backup synchronization operations failed." >&2
