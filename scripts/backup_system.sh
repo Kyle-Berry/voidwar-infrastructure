@@ -35,6 +35,8 @@ WARNING_5_MIN_DELAY="${WARNING_5_MIN_DELAY:-240}"
 WARNING_1_MIN_DELAY="${WARNING_1_MIN_DELAY:-50}"
 WARNING_10_SEC_DELAY="${WARNING_10_SEC_DELAY:-10}"
 
+TEST_MODE="${TEST_MODE:-0}"
+
 DAY_OF_WEEK="${DAY_OF_WEEK_OVERRIDE:-$(date +%u)}"
 DAY_OF_MONTH="${DAY_OF_MONTH_OVERRIDE:-$(date +%d)}"
 
@@ -55,6 +57,7 @@ MINECRAFT_PID=""
 
 server_was_running=false
 stop_requested=false
+shutdown_timed_out=false
 server_restored=false
 warning_broadcasted=false
 cleanup_ran=false
@@ -74,10 +77,20 @@ send_mc_command() {
 
 wait_for_pid_exit() {
     local pid="$1"
+    local timeout="${SHUTDOWN_TIMEOUT_SECONDS:-300}"
+    local elapsed=0
 
     while kill -0 "$pid" 2>/dev/null; do
+        if (( elapsed >= timeout )); then
+            echo "[-] Error: Minecraft process $pid did not exit within ${timeout} seconds." >&2
+            return 1
+        fi
+
         sleep 2
+        ((elapsed += 2))
     done
+
+    return 0
 }
 
 restart_server() {
@@ -127,8 +140,17 @@ cleanup() {
             echo "[*] Backup interrupted after Minecraft shutdown began."
 
             if kill -0 "$MINECRAFT_PID" 2>/dev/null; then
+                if [ "$shutdown_timed_out" = true ]; then
+                    echo "[-] Original Minecraft process is still running; refusing to restart." >&2
+                    return 1
+                fi
+
                 echo "[*] Waiting for the original Minecraft process to exit..."
-                wait_for_pid_exit "$MINECRAFT_PID"
+
+                if ! wait_for_pid_exit "$MINECRAFT_PID"; then
+                    echo "[-] Original Minecraft process is still running; refusing to restart." >&2
+                    return 1
+                fi
             fi
 
             restart_server
@@ -237,29 +259,44 @@ if [ "$server_was_running" = true ]; then
 
     echo "[*] Broadcasting backup warning to players..."
 
-    send_mc_command \
-        'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 5 minutes.","color":"gold"}'
+    if [ "$TEST_MODE" = "1" ]; then
+        echo "[*] TEST MODE: using a 10-second warning instead of 5 minutes."
 
-    warning_broadcasted=true
+        send_mc_command \
+            'tellraw @a {"text":"[Maintenance] TEST MODE: Server restart and backup in 10 seconds.","color":"red"}'
 
-    interruptible_sleep "$WARNING_5_MIN_DELAY"
+        warning_broadcasted=true
+        interruptible_sleep 10
+    else
+        send_mc_command \
+            'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 5 minutes.","color":"gold"}'
 
-    send_mc_command \
-        'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 1 minute. Please finish any active tasks.","color":"gold"}'
+        warning_broadcasted=true
 
-    interruptible_sleep "$WARNING_1_MIN_DELAY"
+        interruptible_sleep "$WARNING_5_MIN_DELAY"
 
-    send_mc_command \
-        'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 10 seconds.","color":"red"}'
+        send_mc_command \
+            'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 1 minute. Please finish any active tasks.","color":"gold"}'
 
-    interruptible_sleep "$WARNING_10_SEC_DELAY"
+        interruptible_sleep "$WARNING_1_MIN_DELAY"
+
+        send_mc_command \
+            'tellraw @a {"text":"[Maintenance] The scheduled server restart and backup will begin in 10 seconds.","color":"red"}'
+
+        interruptible_sleep "$WARNING_10_SEC_DELAY"
+    fi
 
     echo "[*] Sending stop command to Minecraft server..."
     send_mc_command "stop"
     stop_requested=true
 
     echo "[*] Waiting for Minecraft server process to stop..."
-    wait_for_pid_exit "$MINECRAFT_PID"
+
+    if ! wait_for_pid_exit "$MINECRAFT_PID"; then
+        shutdown_timed_out=true
+        echo "[-] Aborting backup: Minecraft has not stopped." >&2
+        exit 1
+    fi
 
     echo "[+] Minecraft server has stopped."
 fi
