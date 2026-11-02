@@ -85,6 +85,23 @@ Example messages include:
 
 If the Minecraft server is already stopped when the backup begins, player notifications are skipped because there are no connected players.
 
+
+### Testing Mode
+
+The backup script supports a testing mode that shortens the normal five-minute player warning countdown to 10 seconds.
+
+Testing mode can be enabled by running:
+
+```bash
+TEST_MODE=1 /home/blockboss/backup_system.sh
+```
+
+Testing mode performs the complete backup workflow, including graceful shutdown, archive creation, server restart, validation, GFS retention, and AWS S3 synchronization.
+
+Only the player warning countdown is shortened. Testing mode is not a dry run.
+
+Normal scheduled backups continue using the standard five-minute warning countdown.
+
 ## Graceful Shutdown
 
 When the Minecraft server is running, the script issues the standard Minecraft console command:
@@ -112,6 +129,12 @@ The backup workflow continuously checks whether the captured Minecraft Java proc
 The backup archive is not created until the original process has completely exited.
 
 This prevents the backup process from reading world files while the Minecraft server is actively modifying them.
+
+The shutdown wait has a maximum timeout of 300 seconds (5 minutes).
+
+If the Minecraft process does not exit within this period, the backup is aborted rather than attempting to archive files while the server is still running.
+
+The cleanup routine also refuses to launch another Minecraft instance while the original process remains active.
 
 ## Backup Creation
 
@@ -229,7 +252,13 @@ start.sh
 
 inside the configured `tmux` session.
 
-After issuing the restart command, the script verifies that a new Minecraft Java process appears before continuing.
+After issuing the restart command, the script waits up to 120 seconds for the Minecraft Java process to be running and for TCP port `37903` to accept local connections.
+
+Three consecutive successful readiness checks are required before the restart is considered successful.
+
+If readiness cannot be confirmed within the timeout, the script reports an error. Cleanup logic prevents launching a duplicate Minecraft instance if a matching Java process is still running.
+
+TCP readiness verification confirms that the server is accepting connections, but does not guarantee that every plugin has finished initializing.
 
 If the Minecraft server was already stopped before the backup began, the script does not start it afterward.
 

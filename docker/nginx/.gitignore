@@ -7,3 +7,6 @@ letsencrypt/
 *.key
 *.pem
 *.crt
+
+# Local Nginx configuration
+conf/default.conf
