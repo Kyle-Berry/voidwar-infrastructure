@@ -70,6 +70,12 @@ minecraft_is_running() {
     pgrep -f 'java.*-jar paper-.*\.jar.*nogui' >/dev/null 2>&1
 }
 
+minecraft_port_is_open() {
+    timeout 2 bash -c \
+        'exec 3<>/dev/tcp/127.0.0.1/37903' \
+        >/dev/null 2>&1
+}
+
 send_mc_command() {
     local command="$1"
     tmux send-keys -t "$TMUX_SESSION" "$command" C-m
@@ -104,19 +110,29 @@ restart_server() {
             "cd $TARGET_DIR && ./start.sh"
     fi
 
-    echo "[*] Waiting for Minecraft process to appear..."
+    echo "[*] Waiting for Minecraft server readiness..."
 
-    for ((i = 0; i < 30; i++)); do
-        if minecraft_is_running; then
-            server_restored=true
-            echo "[+] Minecraft server process detected after restart."
-            return 0
+    local ready_checks=0
+    local deadline=$((SECONDS + 120))
+
+    while (( SECONDS < deadline )); do
+        if minecraft_is_running && minecraft_port_is_open; then
+            ((ready_checks += 1))
+
+            if (( ready_checks >= 3 )); then
+                server_restored=true
+                echo "[+] Minecraft process and TCP port verified."
+                echo "[+] Minecraft server readiness confirmed."
+                return 0
+            fi
+        else
+            ready_checks=0
         fi
 
         sleep 1
     done
 
-    echo "[-] Error: Minecraft process was not detected after restart." >&2
+    echo "[-] Error: Minecraft server readiness was not confirmed within 120 seconds." >&2
     return 1
 }
 
@@ -151,6 +167,12 @@ cleanup() {
                     echo "[-] Original Minecraft process is still running; refusing to restart." >&2
                     return 1
                 fi
+            fi
+
+            if minecraft_is_running; then
+                echo "[-] Minecraft process exists, but readiness was not confirmed." >&2
+                echo "[-] Refusing to launch another Minecraft instance." >&2
+                return 1
             fi
 
             restart_server

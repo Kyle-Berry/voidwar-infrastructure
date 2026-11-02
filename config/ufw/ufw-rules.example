@@ -24,7 +24,11 @@ ufw limit 22/tcp
 # The production environment may use a different game port.
 ufw allow 25565/tcp
 
-# Minecraft Bedrock / Geyser traffic, if enabled
+# Public HTTP and HTTPS traffic for Nginx
+ufw allow 80/tcp
+ufw allow 443/tcp
+
+# Minecraft Bedrock / Geyser traffic, when enabled
 ufw allow 19132/udp
 
 # Enable UFW after reviewing rules
